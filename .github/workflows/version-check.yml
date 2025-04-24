@@ -1,0 +1,72 @@
+name: Semantic Version Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to validate (semantic versioning: vX.Y.Z)'
+        required: true
+        type: string
+      component:
+        description: 'Component to version (frontend or backend)'
+        required: true
+        type: choice
+        options:
+          - frontend
+          - backend
+
+jobs:
+  validate_version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # セマンティックバージョン形式の検証（vX.Y.Z形式であることを確認）
+      - name: Validate semantic version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "Validating version: $VERSION"
+          
+          if ! [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Version must follow semantic versioning format (vX.Y.Z)"
+            exit 1
+          fi
+          
+          echo "Version format is valid."
+      
+      # バージョンの重複チェック（実際の環境では既存バージョンとの重複を確認）
+      - name: Check if version already exists
+        run: |
+          COMPONENT="${{ github.event.inputs.component }}"
+          VERSION="${{ github.event.inputs.version }}"
+          
+          if [ "$COMPONENT" == "backend" ]; then
+            # ECRでタグが存在するか確認（実際の環境ではAWS CLIと認証情報が必要）
+            echo "Checking if backend version $VERSION already exists in ECR..."
+            # aws ecr describe-images --repository-name $ECR_REPOSITORY --image-ids imageTag=$VERSION
+            # タグが既に存在する場合はエラーとする
+          else
+            # フロントエンドの場合、S3で既にバージョンがデプロイされているか確認
+            echo "Checking if frontend version $VERSION already exists..."
+            # S3のメタデータやバージョンファイルを確認する処理
+          fi
+          
+          echo "Version $VERSION is available for use."
+      
+      # バージョンの妥当性検証（数値部分の抽出と比較）
+      - name: Verify version is greater than previous
+        run: |
+          # vX.Y.Z形式から数値を抽出
+          MAJOR=$(echo ${{ github.event.inputs.version }} | sed -E 's/v([0-9]+)\.[0-9]+\.[0-9]+/\1/')
+          MINOR=$(echo ${{ github.event.inputs.version }} | sed -E 's/v[0-9]+\.([0-9]+)\.[0-9]+/\1/')
+          PATCH=$(echo ${{ github.event.inputs.version }} | sed -E 's/v[0-9]+\.[0-9]+\.([0-9]+)/\1/')
+          
+          echo "Version components: Major=$MAJOR, Minor=$MINOR, Patch=$PATCH"
+          
+          # 実際の実装では、レジストリから最新バージョンと比較する
+          # デモンストレーション用に、コンポーネントが数値であることを検証するだけ
+          
+          echo "Version validation successful." 

@@ -1,0 +1,136 @@
+# フロントエンドインフラストラクチャ: S3 + CloudFront
+variable "environment" {
+  type = string
+}
+
+variable "project" {
+  type = string
+}
+
+variable "api_endpoint" {
+  type = string
+  description = "Backend API endpoint URL"
+}
+
+# フロントエンド資産用のS3バケット
+resource "aws_s3_bucket" "frontend" {
+  bucket = "${var.project}-frontend-${var.environment}"
+
+  tags = {
+    Name        = "${var.project}-frontend-${var.environment}"
+    Environment = var.environment
+  }
+}
+
+# S3バケットのバージョニング有効化（バージョン管理用）
+resource "aws_s3_bucket_versioning" "frontend_versioning" {
+  bucket = aws_s3_bucket.frontend.id
+  
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# CloudFrontログ用のS3バケット
+resource "aws_s3_bucket" "cloudfront_logs" {
+  bucket = "${var.project}-cf-logs-${var.environment}"
+
+  tags = {
+    Name        = "${var.project}-cf-logs-${var.environment}"
+    Environment = var.environment
+  }
+}
+
+# CloudFront用のOrigin Access Identity（OAI）
+# S3へのアクセスをCloudFrontに限定するための設定
+resource "aws_cloudfront_origin_access_identity" "frontend_oai" {
+  comment = "OAI for ${var.project} frontend ${var.environment}"
+}
+
+# CloudFront distribution
+resource "aws_cloudfront_distribution" "frontend" {
+  enabled             = true
+  is_ipv6_enabled     = true
+  default_root_object = "index.html"
+  price_class         = "PriceClass_100"
+  
+  origin {
+    domain_name = aws_s3_bucket.frontend.bucket_regional_domain_name
+    origin_id   = aws_s3_bucket.frontend.id
+    
+    s3_origin_config {
+      origin_access_identity = aws_cloudfront_origin_access_identity.frontend_oai.cloudfront_access_identity_path
+    }
+  }
+  
+  logging_config {
+    include_cookies = false
+    bucket          = aws_s3_bucket.cloudfront_logs.bucket_regional_domain_name
+    prefix          = "cloudfront-logs/"
+  }
+  
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = aws_s3_bucket.frontend.id
+    
+    forwarded_values {
+      query_string = false
+      
+      cookies {
+        forward = "none"
+      }
+    }
+    
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 3600
+    max_ttl                = 86400
+  }
+  
+  # Handle SPA routing
+  custom_error_response {
+    error_code            = 404
+    response_code         = 200
+    response_page_path    = "/index.html"
+    error_caching_min_ttl = 300
+  }
+  
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+  
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+  
+  tags = {
+    Name        = "${var.project}-frontend-${var.environment}"
+    Environment = var.environment
+  }
+}
+
+# S3 bucket policy to allow CloudFront access
+resource "aws_s3_bucket_policy" "frontend" {
+  bucket = aws_s3_bucket.frontend.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = "s3:GetObject"
+        Effect   = "Allow"
+        Resource = "${aws_s3_bucket.frontend.arn}/*"
+        Principal = {
+          AWS = aws_cloudfront_origin_access_identity.frontend_oai.iam_arn
+        }
+      }
+    ]
+  })
+}
+
+# Output CloudFront URL
+output "cloudfront_url" {
+  value = "https://${aws_cloudfront_distribution.frontend.domain_name}"
+} 
