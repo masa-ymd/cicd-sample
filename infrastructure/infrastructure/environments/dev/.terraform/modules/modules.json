@@ -1,0 +1,1 @@
+{"Modules":[{"Key":"","Source":"","Dir":"."},{"Key":"infrastructure","Source":"../..","Dir":"../.."},{"Key":"infrastructure.backend","Source":"./modules/backend","Dir":"../../modules/backend"},{"Key":"infrastructure.frontend","Source":"./modules/frontend","Dir":"../../modules/frontend"}]}

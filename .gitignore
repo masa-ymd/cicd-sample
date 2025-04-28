@@ -1,0 +1,81 @@
+# セキュリティリスク - 環境変数と認証情報
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+credentials.json
+*_credentials.*
+*_key.*
+*_token.*
+*_secret.*
+*terraform.tfvars
+*terraform.tfstate*
+*.tfstate.*
+*.tfplan
+.terraformrc
+terraform.rc
+
+# ログファイル
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ビルド成果物とキャッシュ
+node_modules/
+build/
+dist/
+.npm
+.eslintcache
+.cache
+.next
+.nuxt
+out/
+.yarn/cache
+.nyc_output
+coverage/
+
+# バックエンド特有のファイル
+/backend/tmp/
+/backend/log/
+/backend/storage/
+/backend/.bundle
+/backend/db/*.sqlite3
+/backend/db/*.sqlite3-journal
+/backend/db/*.sqlite3-*
+/backend/config/master.key
+/backend/config/credentials.yml.enc
+/backend/config/secrets.yml
+/backend/public/assets
+/backend/public/packs
+/backend/public/packs-test
+
+# インフラストラクチャ特有のファイル
+/infrastructure/.terraform/
+/infrastructure/.terraform.lock.hcl
+/infrastructure/environments/*/terraform.tfstate
+/infrastructure/environments/*/terraform.tfstate.backup
+/infrastructure/environments/*/.terraform/
+/infrastructure/environments/*/.terraform/providers/
+
+# OS関連のファイル
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# エディタ設定
+.idea/
+.vscode/
+*.swp
+*.swo
+*~ 

@@ -1,0 +1,106 @@
+name: Frontend Development Workflow
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'frontend/**'
+  pull_request:
+    branches:
+      - develop
+    paths:
+      - 'frontend/**'
+  workflow_dispatch:
+
+jobs:
+  # ブランチ保護ルールチェックジョブ: PRの場合のみ、ブランチ保護ルールに従っているかチェックします
+  check_branch_rules:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      # ステップ1: ブランチ保護ルールのチェック
+      - name: Check source branch for protection rules
+        id: branch-check
+        run: |
+          # ブランチ情報の取得
+          SOURCE_BRANCH="${{ github.head_ref }}"
+          TARGET_BRANCH="${{ github.base_ref }}"
+          
+          echo "Source branch: $SOURCE_BRANCH"
+          echo "Target branch: $TARGET_BRANCH"
+          
+          # developブランチへのPRはfeature/*ブランチからのみ許可
+          if [ "$TARGET_BRANCH" == "develop" ] && [[ ! "$SOURCE_BRANCH" =~ ^feature/.+ ]]; then
+            echo "Error: Pull requests to develop branch must come from a feature branch (feature/*)."
+            exit 1
+          fi
+          
+          echo "Branch protection rules passed."
+
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    # PRの場合はブランチ保護チェックが成功した後に実行
+    needs: [check_branch_rules]
+    # PRでない場合、または上記のジョブが成功した場合に実行
+    if: always() && (github.event_name != 'pull_request' || needs.check_branch_rules.result == 'success')
+    environment: development
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run tests
+        run: |
+          cd frontend
+          npm test -- --watchAll=false
+
+      - name: Build application
+        run: |
+          cd frontend
+          REACT_APP_API_URL=${{ secrets.API_URL }} npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to S3
+        run: |
+          aws s3 sync frontend/build/ s3://cicd-sample-frontend-dev/ --delete
+
+      - name: Invalidate CloudFront cache
+        run: |
+          export CLOUDFRONT_DISTRIBUTION_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Aliases.Items, 'cicd-sample-frontend-dev')].Id" --output text)
+          aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/*"
+      
+      - name: Comment on PR with deployment info
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🚀 Frontend deployed to development environment.\nCommit: ' + context.sha + '\nURL: ${{ secrets.FRONTEND_URL }}'
+            }) 

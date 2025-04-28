@@ -1,0 +1,219 @@
+# バックエンド開発環境用のCICD処理を定義します
+# このワークフローは開発環境（develop）向けのバックエンドアプリケーションのビルド、テスト、デプロイを自動化します
+name: Backend Development Workflow
+
+# ワークフローのトリガー条件を定義
+on:
+  # developブランチへのプッシュ時に実行（backendディレクトリの変更があった場合のみ）
+  push:
+    branches:
+      - develop
+    paths:
+      - 'backend/**'
+  # developブランチへのプルリクエスト時に実行（backendディレクトリの変更があった場合のみ）
+  pull_request:
+    branches:
+      - develop
+    paths:
+      - 'backend/**'
+  # 手動実行のトリガーも設定
+  workflow_dispatch:
+
+# 必要な権限を定義
+permissions:
+  contents: read          # リポジトリコンテンツの読み取り権限
+  id-token: write         # OIDC認証用のトークン生成権限
+  pull-requests: read     # PRへのコメント権限
+
+# 環境変数の設定
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}               # AWSリージョン
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_DEV }}   # 開発環境用ECRリポジトリ名
+
+jobs:
+  # ブランチ保護ルールチェックジョブ: PRの場合のみ、ブランチ保護ルールに従っているかチェックします
+  check_branch_rules:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      # ステップ1: ブランチ保護ルールのチェック
+      - name: Check source branch for protection rules
+        id: branch-check
+        run: |
+          # ブランチ情報の取得
+          SOURCE_BRANCH="${{ github.head_ref }}"
+          TARGET_BRANCH="${{ github.base_ref }}"
+          
+          echo "Source branch: $SOURCE_BRANCH"
+          echo "Target branch: $TARGET_BRANCH"
+          
+          # developブランチへのPRはfeature/*ブランチからのみ許可
+          if [ "$TARGET_BRANCH" == "develop" ] && [[ ! "$SOURCE_BRANCH" =~ ^feature/.+ ]]; then
+            echo "Error: Pull requests to develop branch must come from a feature branch (feature/*)."
+            exit 1
+          fi
+          
+          echo "Branch protection rules passed."
+
+  # テストとビルドジョブ: バックエンドアプリケーションのテスト実行とDockerイメージのビルド＆ECRへのプッシュを行います
+  test-and-build:
+    runs-on: ubuntu-latest
+    # PRの場合はブランチ保護チェックが成功した後に実行
+    needs: [check_branch_rules]
+    # PRでない場合、または上記のジョブが成功した場合に実行
+    if: always() && (github.event_name != 'pull_request' || needs.check_branch_rules.result == 'success')
+    environment: development   # GitHub Environmentで設定した「development」環境を使用
+    outputs:
+      image-tag: ${{ steps.image-tag.outputs.tag }}   # 後続ジョブで利用するイメージタグを出力
+
+    steps:
+      # ステップ1: リポジトリのコードをチェックアウト
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # ステップ2: Rubyの実行環境をセットアップ
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'              # Rubyのバージョン指定
+          bundler-cache: true              # Bundlerのキャッシュを有効化（高速化）
+          working-directory: 'backend'     # 作業ディレクトリを指定
+
+      # ステップ3: Railsアプリケーションのテスト実行
+      - name: Run tests
+        working-directory: backend
+        run: |
+          bundle exec rspec
+
+      # ステップ4: AWS認証情報の設定（ECRへのアクセスに必要）
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ステップ5: Amazon ECRへのログイン
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      # ステップ6: Dockerイメージのタグを設定（<git-hash>-dev形式）
+      - name: Set image tag
+        id: image-tag
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)    # コミットハッシュの先頭7文字を取得
+          TAG="${SHORT_SHA}-dev"                             # タグを「<git-hash>-dev」形式で作成
+          echo "tag=$TAG" >> $GITHUB_OUTPUT                  # タグを出力変数に設定
+          echo "ECR_REPOSITORY_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_ENV  # ECRリポジトリURIを環境変数に設定
+
+      # ステップ7: Dockerイメージのビルドとプッシュ
+      - name: Build and push Docker image
+        working-directory: backend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .    # イメージをビルド
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG          # ECRにプッシュ
+          echo "Image pushed to ECR: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      # ステップ8: プルリクエストにビルド情報をコメント（PRの場合のみ実行）
+      - name: Comment on PR with build info
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ Backend image built and pushed to ECR.\nCommit: ' + context.sha + '\nImage tag: ${{ steps.image-tag.outputs.tag }}'
+            })
+
+  # デプロイジョブ: ビルドしたDockerイメージをECSにデプロイします
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test-and-build   # test-and-buildジョブの完了後に実行
+    environment: development   # GitHub Environmentで設定した「development」環境を使用
+
+    steps:
+      # ステップ1: リポジトリのコードをチェックアウト
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # ステップ2: AWS認証情報の設定
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ステップ3: Amazon ECRへのログイン
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      # ステップ4: デプロイに必要な環境変数を設定
+      - name: Set environment variables
+        run: |
+          echo "ECR_REPOSITORY_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ needs.test-and-build.outputs.image-tag }}" >> $GITHUB_ENV
+
+      # ステップ5: 現在のECSタスク定義を取得
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition cicd-sample-task-dev \
+            --query "taskDefinition" \
+            --output json > task-definition.json
+
+      # ステップ6: タスク定義を新しいイメージで更新
+      - name: Update task definition with new image
+        run: |
+          # jqを使用してタスク定義のコンテナイメージとアプリバージョン環境変数を更新
+          jq --arg IMAGE "$ECR_REPOSITORY_URI:$IMAGE_TAG" \
+             --arg VERSION "$IMAGE_TAG" \
+             '.containerDefinitions[0].image = $IMAGE | .containerDefinitions[0].environment += [{"name": "APP_VERSION", "value": $VERSION}]' \
+             task-definition.json > new-task-definition.json
+          
+          # 更新したタスク定義を登録
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-definition.json \
+            --query "taskDefinition.taskDefinitionArn" \
+            --output text)
+          
+          echo "New task definition registered: $NEW_TASK_DEF_ARN"
+          echo "TASK_DEF_ARN=$NEW_TASK_DEF_ARN" >> $GITHUB_ENV
+
+      # ステップ7: ECSサービスを更新して新しいタスク定義をデプロイ
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster cicd-sample-cluster-dev \
+            --service cicd-sample-service-dev \
+            --task-definition $TASK_DEF_ARN \
+            --force-new-deployment
+
+      # ステップ8: デプロイの完了を待機
+      - name: Wait for deployment to complete
+        run: |
+          aws ecs wait services-stable \
+            --cluster cicd-sample-cluster-dev \
+            --services cicd-sample-service-dev
+
+      # ステップ9: プルリクエストにデプロイ情報をコメント（PRの場合のみ実行）
+      - name: Comment on PR with deployment info
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🚀 Backend deployed to development environment.\nCommit: ' + context.sha + '\nImage tag: ${{ env.IMAGE_TAG }}\nAPI URL: ${{ secrets.API_URL }}'
+            }) 
