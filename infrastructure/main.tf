@@ -7,12 +7,7 @@ terraform {
     }
   }
   
-  # Terraformの状態管理をS3で行う設定
-  backend "s3" {
-    bucket = "cicd-sample-terraform-state"
-    key    = "terraform.tfstate"
-    region = "us-east-1"
-  }
+  # バックエンド設定は環境ごとのディレクトリに移動
 }
 
 # AWSプロバイダーの設定
@@ -21,10 +16,10 @@ provider "aws" {
 }
 
 # 共通変数の定義
-# AWSリージョン
+# AWSリージョン - 東京リージョンをデフォルトに変更
 variable "aws_region" {
   type    = string
-  default = "us-east-1"
+  default = "ap-northeast-1"  # 東京リージョン
 }
 
 # 環境（dev または prod）

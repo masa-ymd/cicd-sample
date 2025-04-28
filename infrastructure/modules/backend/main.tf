@@ -55,7 +55,7 @@ resource "aws_subnet" "public" {
   count             = 2
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.${count.index + 1}.0/24"
-  availability_zone = "us-east-1${count.index == 0 ? "a" : "b"}"
+  availability_zone = "ap-northeast-1${count.index == 0 ? "a" : "c"}"
   
   map_public_ip_on_launch = true
   
@@ -291,7 +291,7 @@ resource "aws_ecs_task_definition" "main" {
         logDriver = "awslogs"
         options = {
           "awslogs-group"         = "/ecs/${var.project}-${var.environment}"
-          "awslogs-region"        = "us-east-1"
+          "awslogs-region"        = "ap-northeast-1"
           "awslogs-stream-prefix" = "ecs"
         }
       }
