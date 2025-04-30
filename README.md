@@ -213,6 +213,8 @@ ECR_REPOSITORY_PROD: cicd-sample-backend-prod
 API_URL: http://[開発環境ALBのDNS名] （デプロイ後に設定）
 FRONTEND_URL: https://[開発環境CloudFrontのドメイン名] （デプロイ後に設定）
 ALLOWED_HOSTS: localhost,127.0.0.1,cicd-sample-alb-dev-*.ap-northeast-1.elb.amazonaws.com,*.cloudfront.net
+CLOUDFRONT_DISTRIBUTION_ID: [開発環境のフロントエンドCloudFrontディストリビューションID] （Terraformデプロイ後に設定）
+BACKEND_CLOUDFRONT_DISTRIBUTION_ID: [開発環境のバックエンドCloudFrontディストリビューションID] （Terraformデプロイ後に設定）
 ```
 
 ```
@@ -220,6 +222,8 @@ ALLOWED_HOSTS: localhost,127.0.0.1,cicd-sample-alb-dev-*.ap-northeast-1.elb.amaz
 API_URL: http://[本番環境ALBのDNS名] （デプロイ後に設定）
 FRONTEND_URL: https://[本番環境CloudFrontのドメイン名] （デプロイ後に設定）
 ALLOWED_HOSTS: api.example.com,cicd-sample-alb-prod-*.ap-northeast-1.elb.amazonaws.com,*.cloudfront.net
+CLOUDFRONT_DISTRIBUTION_ID: [本番環境のフロントエンドCloudFrontディストリビューションID] （Terraformデプロイ後に設定）
+BACKEND_CLOUDFRONT_DISTRIBUTION_ID: [本番環境のバックエンドCloudFrontディストリビューションID] （Terraformデプロイ後に設定）
 ```
 
 > **注意**: GitHub Actionsのワークフローファイルも修正して、開発環境と本番環境で適切なECRリポジトリ名を参照するようにする必要があります。
@@ -245,6 +249,12 @@ Terraformの実行結果から出力される値を使用して、GitHub Secrets
 1. `frontend_url`の値を`FRONTEND_URL`シークレットに設定
 2. `backend_url`の値を`API_URL`シークレットに設定
 3. `api_cloudfront_endpoint`の値を確認し、必要に応じてALLOWED_HOSTSに追加
+4. CloudFrontディストリビューションIDを取得して`CLOUDFRONT_DISTRIBUTION_ID`と`BACKEND_CLOUDFRONT_DISTRIBUTION_ID`シークレットに設定:
+   ```bash
+   # CloudFrontディストリビューションIDの取得
+   aws cloudfront list-distributions --query "DistributionList.Items[*].{Id:Id,DomainName:DomainName,Comment:Comment,Enabled:Enabled}" --output table
+   # 出力から該当する環境のフロントエンド用とバックエンド用のCloudFrontディストリビューションIDをそれぞれ特定し、GitHubシークレットに設定
+   ```
 
 #### 4.3 初期アプリケーションのビルドとデプロイ
 

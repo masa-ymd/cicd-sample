@@ -16,7 +16,7 @@ on:
 permissions:
   contents: read
   id-token: write
-  pull-requests: read
+  pull-requests: write
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -161,6 +161,10 @@ jobs:
           aws ecs wait services-stable \
             --cluster cicd-sample-cluster-dev \
             --services cicd-sample-service-dev
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.BACKEND_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
 
       - name: Comment on PR with deployment info
         if: github.event_name == 'pull_request'
