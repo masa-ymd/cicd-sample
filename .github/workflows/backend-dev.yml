@@ -38,9 +38,20 @@ jobs:
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.2'
-          bundler-cache: true
+          ruby-version: '3.1.4'
           working-directory: 'backend'
+        
+      # Add platform to Gemfile.lock
+      - name: Add platform to Gemfile.lock
+        working-directory: backend
+        run: |
+          bundle lock --add-platform x86_64-linux
+
+      # Install dependencies
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          bundle install --jobs 4
 
       # テスト実行
       - name: Run tests
@@ -128,7 +139,19 @@ jobs:
           aws ecs describe-task-definition \
             --task-definition cicd-sample-task-dev \
             --query "taskDefinition" \
-            --output json > task-definition.json
+            --output json > task-definition-full.json
+          
+          # 必要なフィールドのみを抽出（シンプルなバージョン）
+          jq '{
+            family: .family,
+            executionRoleArn: .executionRoleArn,
+            networkMode: .networkMode,
+            containerDefinitions: .containerDefinitions,
+            volumes: .volumes,
+            requiresCompatibilities: .requiresCompatibilities,
+            cpu: .cpu,
+            memory: .memory
+          }' task-definition-full.json > task-definition.json
 
       - name: Update task definition with new image
         run: |
