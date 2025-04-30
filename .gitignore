@@ -1,6 +1,8 @@
 # セキュリティリスク - 環境変数と認証情報
 .env
 .env.*
+**/.env
+**/.env.*
 .env.local
 .env.development.local
 .env.test.local

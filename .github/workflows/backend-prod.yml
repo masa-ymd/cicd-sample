@@ -94,7 +94,10 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker build \
+            -f Dockerfile.prod \
+            --build-arg DEFAULT_ALLOWED_HOSTS=${{ secrets.ALLOWED_HOSTS }} \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "Image pushed to ECR: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
@@ -148,7 +151,8 @@ jobs:
           # Update the container image in the task definition
           jq --arg IMAGE "$ECR_REPOSITORY_URI:$IMAGE_TAG" \
              --arg VERSION "$IMAGE_TAG" \
-             '.containerDefinitions[0].image = $IMAGE | .containerDefinitions[0].environment += [{"name": "APP_VERSION", "value": $VERSION}]' \
+             --arg ALLOWED_HOSTS "${{ secrets.ALLOWED_HOSTS }}" \
+             '.containerDefinitions[0].image = $IMAGE | .containerDefinitions[0].environment += [{"name": "APP_VERSION", "value": $VERSION}, {"name": "ALLOWED_HOSTS", "value": $ALLOWED_HOSTS}]' \
              task-definition.json > new-task-definition.json
           
           # Register the updated task definition
