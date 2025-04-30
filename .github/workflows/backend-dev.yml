@@ -41,6 +41,12 @@ jobs:
           ruby-version: '3.1.4'
           bundler-cache: true
           working-directory: 'backend'
+        
+      # Add platform to Gemfile.lock
+      - name: Add platform to Gemfile.lock
+        working-directory: backend
+        run: |
+          bundle lock --add-platform x86_64-linux
 
       # テスト実行
       - name: Run tests
