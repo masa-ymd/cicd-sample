@@ -88,9 +88,8 @@ jobs:
 
       - name: Invalidate CloudFront cache
         run: |
-          export CLOUDFRONT_DISTRIBUTION_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Aliases.Items, 'cicd-sample-frontend-prod')].Id" --output text)
-          aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/*"
-      
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
+
       - name: Comment on PR with deployment info
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v6
