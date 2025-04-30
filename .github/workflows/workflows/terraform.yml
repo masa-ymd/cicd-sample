@@ -1,0 +1,120 @@
+name: Terraform Infrastructure
+
+on:
+  push:
+    branches:
+      - develop
+      - production
+    paths:
+      - 'infrastructure/**'
+  pull_request:
+    branches:
+      - develop
+      - production
+    paths:
+      - 'infrastructure/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy (dev or prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: read
+
+env:
+  TF_LOG: INFO
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/production' && 'production' || 'development') }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+          elif [ "${{ github.ref }}" == "refs/heads/production" ]; then
+            ENVIRONMENT="prod"
+          else
+            ENVIRONMENT="dev"
+          fi
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          echo "Working with environment: $ENVIRONMENT"
+
+      - name: Terraform Init
+        working-directory: infrastructure/environments/${{ steps.env.outputs.environment }}
+        run: terraform init
+
+      - name: Terraform Format
+        working-directory: infrastructure/environments/${{ steps.env.outputs.environment }}
+        run: terraform fmt -check
+
+      - name: Terraform Validate
+        working-directory: infrastructure/environments/${{ steps.env.outputs.environment }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: infrastructure/environments/${{ steps.env.outputs.environment }}
+        id: plan
+        run: terraform plan -no-color -input=false
+        continue-on-error: true
+
+      - name: Post Plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Plan for ${{ steps.env.outputs.environment }} 📝\`${{ steps.plan.outcome }}\`
+            
+            <details><summary>Show Plan</summary>
+            
+            \`\`\`terraform
+            ${{ steps.plan.outputs.stdout || steps.plan.outputs.stderr }}
+            \`\`\`
+            
+            </details>
+            
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      - name: Terraform Apply
+        if: github.event_name != 'pull_request'
+        working-directory: infrastructure/environments/${{ steps.env.outputs.environment }}
+        run: terraform apply -auto-approve -input=false 

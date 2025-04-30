@@ -13,9 +13,11 @@ RUN apt-get update && apt-get install -y \
 # 作業ディレクトリの設定
 WORKDIR /app
 
-# Gemfileのみをコピーしてインストール
+# Gemfileのみをコピー
 COPY Gemfile Gemfile.lock* ./
-RUN gem install bundler && bundle install --jobs 4
+RUN gem install bundler && \
+    bundle config set --local without 'development test' && \
+    bundle install --jobs 4
 
 # アプリケーションコードのコピー
 COPY . .
@@ -23,17 +25,19 @@ COPY . .
 # データディレクトリの作成と権限設定
 RUN mkdir -p /app/db && chmod 777 /app/db
 
+# 本番環境用の設定
+ENV THOR_SILENCE_DEPRECATION=1
+ENV RUBY_YJIT_ENABLE=1
+ENV RAILS_ENV=production
+ENV RAILS_LOG_TO_STDOUT=true
+
+# ホスト認証用の環境変数（ビルド引数からデフォルト値を設定）
+ARG DEFAULT_ALLOWED_HOSTS=api.example.com
+ENV ALLOWED_HOSTS=${DEFAULT_ALLOWED_HOSTS}
+
 # スタートアップスクリプトの作成
 COPY entrypoint.sh /app/
 RUN chmod +x /app/entrypoint.sh
-
-# Ruby logger問題を回避する環境変数設定
-ENV THOR_SILENCE_DEPRECATION=1
-ENV RUBY_YJIT_ENABLE=1
-
-# ホスト認証用の環境変数（ビルド引数からデフォルト値を設定）
-ARG DEFAULT_ALLOWED_HOSTS=localhost,127.0.0.1
-ENV ALLOWED_HOSTS=${DEFAULT_ALLOWED_HOSTS}
 
 # コンテナのポート公開設定
 EXPOSE 3000

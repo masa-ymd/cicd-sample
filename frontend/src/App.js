@@ -10,7 +10,7 @@ function App() {
 
   useEffect(() => {
     // APIエンドポイントの設定（環境変数から取得するか、ローカル開発用のデフォルト値を使用）
-    const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:3001/api/health';
+    const apiUrl = process.env.REACT_APP_API_URL || '/api/health';
     
     // APIへのリクエスト実行
     axios.get(apiUrl)

@@ -55,7 +55,7 @@ resource "aws_subnet" "public" {
   count             = 2
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.${count.index + 1}.0/24"
-  availability_zone = "us-east-1${count.index == 0 ? "a" : "b"}"
+  availability_zone = "ap-northeast-1${count.index == 0 ? "a" : "c"}"
   
   map_public_ip_on_launch = true
   
@@ -291,7 +291,7 @@ resource "aws_ecs_task_definition" "main" {
         logDriver = "awslogs"
         options = {
           "awslogs-group"         = "/ecs/${var.project}-${var.environment}"
-          "awslogs-region"        = "us-east-1"
+          "awslogs-region"        = "ap-northeast-1"
           "awslogs-stream-prefix" = "ecs"
         }
       }
@@ -348,4 +348,63 @@ resource "aws_ecs_service" "main" {
 # Output the API endpoint
 output "api_endpoint" {
   value = "http://${aws_lb.main.dns_name}"
+}
+
+# CloudFront distribution for ALB
+resource "aws_cloudfront_distribution" "api" {
+  enabled             = true
+  is_ipv6_enabled     = true
+  price_class         = "PriceClass_100"
+  http_version        = "http2"
+  
+  origin {
+    domain_name = aws_lb.main.dns_name
+    origin_id   = "alb"
+    
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+  
+  default_cache_behavior {
+    allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "alb"
+    
+    forwarded_values {
+      query_string = true
+      cookies {
+        forward = "all"
+      }
+      headers = ["*"]
+    }
+    
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 0
+    max_ttl                = 0
+  }
+  
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+  
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+  
+  tags = {
+    Name        = "${var.project}-api-cf-${var.environment}"
+    Environment = var.environment
+  }
+}
+
+# Output CloudFront API endpoint
+output "api_cloudfront_endpoint" {
+  value = "https://${aws_cloudfront_distribution.api.domain_name}"
 } 
