@@ -41,6 +41,23 @@ resource "aws_s3_bucket" "cloudfront_logs" {
   }
 }
 
+# CloudFrontログバケットのオブジェクト所有権設定（ACLを有効化）
+resource "aws_s3_bucket_ownership_controls" "cloudfront_logs" {
+  bucket = aws_s3_bucket.cloudfront_logs.id
+  
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+# CloudFrontログバケットのACL設定
+resource "aws_s3_bucket_acl" "cloudfront_logs" {
+  depends_on = [aws_s3_bucket_ownership_controls.cloudfront_logs]
+  
+  bucket = aws_s3_bucket.cloudfront_logs.id
+  acl    = "private"
+}
+
 # CloudFront用のOrigin Access Identity（OAI）
 # S3へのアクセスをCloudFrontに限定するための設定
 resource "aws_cloudfront_origin_access_identity" "frontend_oai" {

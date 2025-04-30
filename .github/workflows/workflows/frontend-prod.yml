@@ -1,0 +1,197 @@
+name: Frontend Production Workflow
+
+# 本番環境へのデプロイは手動実行のみ許可（セマンティックバージョニングを強制）
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (semantic versioning: vX.Y.Z)'
+        required: true
+        type: string
+
+# 権限の設定
+permissions:
+  contents: write         # リポジトリコンテンツの読み取りと書き込み権限（タグ作成に必要）
+  id-token: write         # OIDC認証用のトークン生成権限 
+  pull-requests: read     # PRへのコメント権限
+
+jobs:
+  # セマンティックバージョンの検証ジョブ
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      # ステップ1: リポジトリのコードをチェックアウト
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 完全な履歴を取得
+
+      # ステップ2: 入力されたバージョン番号がセマンティックバージョニング形式(vX.Y.Z)に従っているか検証
+      - name: Validate semantic version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "Validating version: $VERSION"
+          
+          if ! [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Version must follow semantic versioning format (vX.Y.Z)"
+            exit 1
+          fi
+          
+          echo "Version format is valid."
+
+      # ステップ3: AWS認証情報の設定
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      # ステップ4: バージョンの重複チェック
+      - name: Check if version already exists
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          
+          echo "Checking if frontend version $VERSION already exists..."
+          # S3のバージョンファイルをチェック
+          if aws s3 ls s3://cicd-sample-frontend-prod/version-$VERSION.json 2>/dev/null; then
+            echo "Error: Version $VERSION already exists in S3 bucket"
+            exit 1
+          fi
+          
+          # GitHubタグが既に存在するか確認
+          if git tag | grep -q "^${VERSION}$"; then
+            echo "Error: Git tag $VERSION already exists in the repository"
+            exit 1
+          fi
+          
+          echo "Version $VERSION is available for use."
+      
+      # ステップ5: バージョンの妥当性検証（過去のリリースと比較）
+      - name: Verify version is greater than previous
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          
+          # vX.Y.Z形式から数値を抽出
+          MAJOR=$(echo $VERSION | sed -E 's/v([0-9]+)\.[0-9]+\.[0-9]+/\1/')
+          MINOR=$(echo $VERSION | sed -E 's/v[0-9]+\.([0-9]+)\.[0-9]+/\1/')
+          PATCH=$(echo $VERSION | sed -E 's/v[0-9]+\.[0-9]+\.([0-9]+)/\1/')
+          
+          echo "Version components: Major=$MAJOR, Minor=$MINOR, Patch=$PATCH"
+          
+          # S3から最新バージョンファイルのリストを取得し、最も新しいバージョンを抽出
+          LATEST_VERSION=$(aws s3 ls s3://cicd-sample-frontend-prod/ --recursive | grep -E 'version-v[0-9]+\.[0-9]+\.[0-9]+\.json' | sort | tail -1 | sed -E 's/.*version-(v[0-9]+\.[0-9]+\.[0-9]+)\.json/\1/' || echo "v0.0.0")
+          
+          if [ "$LATEST_VERSION" == "v0.0.0" ]; then
+            echo "No previous version found. This will be the first release."
+          else
+            echo "Latest version: $LATEST_VERSION"
+            
+            # 最新バージョンの数値を抽出
+            LATEST_MAJOR=$(echo $LATEST_VERSION | sed -E 's/v([0-9]+)\.[0-9]+\.[0-9]+/\1/')
+            LATEST_MINOR=$(echo $LATEST_VERSION | sed -E 's/v[0-9]+\.([0-9]+)\.[0-9]+/\1/')
+            LATEST_PATCH=$(echo $LATEST_VERSION | sed -E 's/v[0-9]+\.[0-9]+\.([0-9]+)/\1/')
+            
+            # バージョン比較
+            if [ $MAJOR -lt $LATEST_MAJOR ] || 
+               ([ $MAJOR -eq $LATEST_MAJOR ] && [ $MINOR -lt $LATEST_MINOR ]) || 
+               ([ $MAJOR -eq $LATEST_MAJOR ] && [ $MINOR -eq $LATEST_MINOR ] && [ $PATCH -le $LATEST_PATCH ]); then
+              echo "Error: Version $VERSION is not greater than latest version $LATEST_VERSION"
+              exit 1
+            fi
+          fi
+          
+          echo "Version validation successful: $VERSION is newer than existing versions."
+
+  # GitHubタグ作成ジョブ: validate-versionジョブが成功したら、GitHubリポジトリにタグを作成します
+  create-tag:
+    runs-on: ubuntu-latest
+    needs: validate-version
+    steps:
+      # ステップ1: リポジトリのコードをチェックアウト
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 完全な履歴を取得
+      
+      # ステップ2: Gitユーザー設定
+      - name: Setup git user
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+      
+      # ステップ3: タグの作成とプッシュ
+      - name: Create and push tag
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          ANNOTATION="Frontend release $VERSION - $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          
+          echo "Creating annotated tag $VERSION with message: $ANNOTATION"
+          git tag -a "$VERSION" -m "$ANNOTATION"
+          git push origin "$VERSION"
+          
+          echo "Successfully created and pushed tag $VERSION"
+
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    needs: create-tag
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run tests
+        run: |
+          cd frontend
+          npm test -- --watchAll=false
+
+      - name: Build application
+        run: |
+          cd frontend
+          REACT_APP_API_URL=${{ secrets.API_URL }} REACT_APP_VERSION=${{ github.event.inputs.version }} npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Tag production deployment
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Deploying frontend version: $VERSION"
+          
+          # バージョン情報ファイルの作成
+          echo "{\"version\": \"$VERSION\", \"deployedAt\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\", \"commit\": \"${{ github.sha }}\"}" > frontend/build/version-$VERSION.json
+
+      - name: Deploy to S3
+        run: |
+          aws s3 sync frontend/build/ s3://cicd-sample-frontend-prod/ --delete
+
+      - name: Invalidate CloudFront cache
+        run: |
+          export CLOUDFRONT_DISTRIBUTION_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Aliases.Items, 'cicd-sample-frontend-prod')].Id" --output text)
+          aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/*"
+      
+      - name: Deployment completed
+        run: |
+          echo "🚀 Frontend version ${{ env.VERSION }} has been successfully deployed to production environment." 
