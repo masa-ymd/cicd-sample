@@ -1,3 +1,26 @@
+# ワークフロー概要:
+# ===================================================
+# このファイルには2つのワークフローが含まれています：
+#
+# 1. Backend Production Workflow:
+#    - プッシュやPRで自動的に実行される
+#    - テストとビルドのみを行う
+#    - ビルドされたイメージは一時的な<commit-hash>-buildタグで保存
+#    - デプロイを実行するには手動ワークフローを実行するように案内メッセージを表示
+#
+# 2. Backend Production Deploy:
+#    - 常に手動実行（workflow_dispatch）のみ
+#    - 必ずセマンティックバージョン入力が必要
+#    - 2つのオプション：
+#      - 既存ビルドを使用（build_tagパラメータで指定）
+#      - 新規ビルド（build_tagを空にする）
+#    - バージョン番号のバリデーションを実施
+#    - 本番環境へのデプロイを実行
+#
+# この設計により、本番環境へのデプロイは必ずバージョン番号を指定して実行されるようになり、
+# PRやブランチへのプッシュでビルドとテストは自動的に実行されるため、CIの恩恵も維持できます。
+# ===================================================
+
 name: Backend Production Workflow
 
 on:
@@ -12,11 +35,6 @@ on:
     paths:
       - 'backend/**'
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to deploy (semantic versioning: vX.Y.Z)'
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -28,24 +46,8 @@ env:
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
 
 jobs:
-  validate-version:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    steps:
-      - name: Validate semantic version
-        run: |
-          if ! [[ ${{ github.event.inputs.version }} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Error: Version must follow semantic versioning format (vX.Y.Z)"
-            exit 1
-          fi
-          echo "Version validated: ${{ github.event.inputs.version }}"
-
   test-and-build:
     runs-on: ubuntu-latest
-    needs: validate-version
-    if: |
-      always() && 
-      (needs.validate-version.result == 'success' || github.event_name != 'workflow_dispatch')
     environment: production
     outputs:
       image-tag: ${{ steps.image-tag.outputs.tag }}
@@ -90,11 +92,8 @@ jobs:
       - name: Set image tag
         id: image-tag
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.version }}"
-          else
-            TAG="latest"
-          fi
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          TAG="${SHORT_SHA}-build"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "ECR_REPOSITORY_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_ENV
 
@@ -121,18 +120,119 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ Backend image built and pushed to ECR.\nCommit: ' + context.sha + '\nImage tag: ${{ steps.image-tag.outputs.tag }}'
+              body: '✅ Backend image built and pushed to ECR.\nCommit: ' + context.sha + '\nImage tag: ${{ steps.image-tag.outputs.tag }}\n\n**デプロイするには**: "Backend Production Deploy" ワークフローを手動で実行し、セマンティックバージョンを入力してください。'
             })
 
-  deploy:
-    runs-on: ubuntu-latest
-    needs: test-and-build
-    environment: production
+---
+name: Backend Production Deploy
 
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (semantic versioning: vX.Y.Z)'
+        required: true
+        type: string
+      build_tag:
+        description: 'ビルドタグ (例: 1a2b3c4-build)、空の場合は最新ビルドから新しくビルドします'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate semantic version
+        run: |
+          if ! [[ ${{ github.event.inputs.version }} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Version must follow semantic versioning format (vX.Y.Z)"
+            exit 1
+          fi
+          echo "Version validated: ${{ github.event.inputs.version }}"
+  
+  build-if-needed:
+    runs-on: ubuntu-latest
+    needs: validate-version
+    environment: production
+    outputs:
+      image-tag: ${{ steps.set-image.outputs.final_tag }}
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        if: ${{ github.event.inputs.build_tag == '' }}
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+      
+      - name: Set image tags
+        id: set-image
+        run: |
+          echo "ECR_REPOSITORY_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_ENV
+          
+          if [ -n "${{ github.event.inputs.build_tag }}" ]; then
+            # 既存ビルドタグを使用
+            echo "Using existing build: ${{ github.event.inputs.build_tag }}"
+            echo "SOURCE_TAG=${{ github.event.inputs.build_tag }}" >> $GITHUB_ENV
+            echo "final_tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            # 新規ビルド
+            echo "Building new image with version: ${{ github.event.inputs.version }}"
+            echo "SOURCE_TAG=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+            echo "final_tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Build and push new image if needed
+        if: ${{ github.event.inputs.build_tag == '' }}
+        working-directory: backend
+        run: |
+          docker build \
+            -f Dockerfile.prod \
+            --build-arg DEFAULT_ALLOWED_HOSTS=${{ secrets.ALLOWED_HOSTS }} \
+            -t $ECR_REPOSITORY_URI:${{ github.event.inputs.version }} .
+          docker push $ECR_REPOSITORY_URI:${{ github.event.inputs.version }}
+          echo "Image built and pushed: $ECR_REPOSITORY_URI:${{ github.event.inputs.version }}"
+      
+      - name: Tag existing image if specified
+        if: ${{ github.event.inputs.build_tag != '' }}
+        run: |
+          # 既存イメージをプル
+          docker pull $ECR_REPOSITORY_URI:$SOURCE_TAG
+          
+          # バージョンタグで再タグ付け
+          docker tag $ECR_REPOSITORY_URI:$SOURCE_TAG $ECR_REPOSITORY_URI:${{ github.event.inputs.version }}
+          
+          # 新しいタグでプッシュ
+          docker push $ECR_REPOSITORY_URI:${{ github.event.inputs.version }}
+          
+          # latestとしても設定
+          docker tag $ECR_REPOSITORY_URI:$SOURCE_TAG $ECR_REPOSITORY_URI:latest
+          docker push $ECR_REPOSITORY_URI:latest
+          
+          echo "Image tagged and pushed: $ECR_REPOSITORY_URI:${{ github.event.inputs.version }}"
 
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-if-needed
+    environment: production
+
+    steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -147,7 +247,7 @@ jobs:
       - name: Set environment variables
         run: |
           echo "ECR_REPOSITORY_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_ENV
-          echo "IMAGE_TAG=${{ needs.test-and-build.outputs.image-tag }}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ needs.build-if-needed.outputs.image-tag }}" >> $GITHUB_ENV
 
       - name: Download current task definition
         run: |
@@ -202,17 +302,4 @@ jobs:
 
       - name: Invalidate CloudFront cache
         run: |
-          aws cloudfront create-invalidation --distribution-id ${{ secrets.BACKEND_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
-
-      - name: Comment on PR with deployment info
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: '🚀 Backend deployed to production environment.\nCommit: ' + context.sha + '\nVersion: ${{ env.IMAGE_TAG }}\nAPI URL: ${{ secrets.API_URL }}'
-            }) 
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.BACKEND_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*" 
