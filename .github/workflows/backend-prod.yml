@@ -1,3 +1,19 @@
+# ワークフロー概要:
+# ===================================================
+# このワークフローは以下のフローで実行されます:
+#
+# 1. PRがproductionブランチにマージされると自動的に起動
+# 2. テストとビルド検証を行う
+# 3. Issueを作成し、ユーザーにセマンティックバージョン入力を促す
+# 4. ユーザーがIssueにコメントでバージョンを入力
+# 5. バージョン入力を検出したら、Gitタグを作成
+# 6. Dockerイメージをビルドしてタグ付け
+# 7. 本番環境へのデプロイを実行
+#
+# この設計により、PRマージ後に自動で処理が開始されつつも、
+# 本番環境へのデプロイは必ずバージョン番号を指定して実行されるようになります。
+# ===================================================
+
 name: Backend Production Workflow
 
 on:
@@ -7,48 +23,35 @@ on:
     paths:
       - 'backend/**'
   pull_request:
+    types: [closed]
     branches:
       - production
     paths:
       - 'backend/**'
+  issue_comment:
+    types: [created]
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to deploy (semantic versioning: vX.Y.Z)'
-        required: true
-        type: string
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
   pull-requests: write
+  issues: write
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
 
 jobs:
-  validate-version:
+  # PRマージまたはプッシュ時に実行される初期ジョブ
+  test-and-prepare:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    steps:
-      - name: Validate semantic version
-        run: |
-          if ! [[ ${{ github.event.inputs.version }} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Error: Version must follow semantic versioning format (vX.Y.Z)"
-            exit 1
-          fi
-          echo "Version validated: ${{ github.event.inputs.version }}"
-
-  test-and-build:
-    runs-on: ubuntu-latest
-    needs: validate-version
     if: |
-      always() && 
-      (needs.validate-version.result == 'success' || github.event_name != 'workflow_dispatch')
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/production')
     environment: production
     outputs:
-      image-tag: ${{ steps.image-tag.outputs.tag }}
+      commit-sha: ${{ github.sha }}
 
     steps:
       - name: Checkout code
@@ -76,6 +79,120 @@ jobs:
         run: |
           bundle exec rspec
 
+      # テスト成功後、バージョン入力を求めるIssueを作成
+      - name: Create version input issue
+        uses: actions/github-script@v6
+        id: create-issue
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const shortSha = context.sha.substring(0, 7);
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚀 Backend Production Release: Waiting for version input (${shortSha})`,
+              body: `## Backend Production Release
+              
+              コミット \`${context.sha}\` のテストが成功しました。
+              
+              ### 🔖 バージョン入力
+              
+              以下の形式でコメントに **セマンティックバージョン** を入力してください。リリースプロセスが継続されます。
+              
+              \`\`\`
+              version: vX.Y.Z
+              \`\`\`
+              
+              例: \`version: v1.2.3\`
+              
+              > **注意**: このIssueはワークフローによって自動生成されています。
+              `,
+              labels: ['production', 'waiting-for-version']
+            });
+            console.log(`Issue created: ${issue.data.html_url}`);
+            return { issue_number: issue.data.number, issue_url: issue.data.html_url };
+            
+      # Issueのリンクを出力
+      - name: Output issue info
+        run: |
+          echo "Issue created: #${{ fromJSON(steps.create-issue.outputs.result).issue_number }}"
+          echo "Please input semantic version in the issue: ${{ fromJSON(steps.create-issue.outputs.result).issue_url }}"
+          echo "VERSION_ISSUE_NUMBER=${{ fromJSON(steps.create-issue.outputs.result).issue_number }}" >> $GITHUB_ENV
+
+      # 環境変数に保存
+      - name: Save issue number to file
+        run: |
+          mkdir -p /tmp/workflow
+          echo "${{ fromJSON(steps.create-issue.outputs.result).issue_number }}" > /tmp/workflow/issue_number
+          echo "${{ github.sha }}" > /tmp/workflow/commit_sha
+
+      # 環境変数を次のジョブでも使えるようにアーティファクトとして保存
+      - name: Save issue info as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: workflow-info
+          path: /tmp/workflow/
+          retention-days: 1
+
+  # Issueコメントからバージョンを取得して処理を継続するジョブ
+  process-version-and-build:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'issue_comment' &&
+      contains(github.event.issue.labels.*.name, 'waiting-for-version') &&
+      startsWith(github.event.comment.body, 'version:')
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # コメントからバージョンを取得
+      - name: Extract version from comment
+        id: extract-version
+        run: |
+          VERSION=$(echo "${{ github.event.comment.body }}" | grep -oP 'version:\s*\K(v[0-9]+\.[0-9]+\.[0-9]+)')
+          if [[ -z "$VERSION" ]]; then
+            echo "Error: Invalid version format. Expected 'version: vX.Y.Z'"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      # バージョン形式を検証
+      - name: Validate semantic version
+        run: |
+          if ! [[ $VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Version must follow semantic versioning format (vX.Y.Z)"
+            exit 1
+          fi
+          echo "Version validated: $VERSION"
+
+      # ワークフロー情報をダウンロード
+      - name: Download workflow info
+        uses: actions/download-artifact@v3
+        with:
+          name: workflow-info
+          path: /tmp/workflow
+
+      # コミットハッシュを取得
+      - name: Get commit SHA
+        id: get-info
+        run: |
+          COMMIT_SHA=$(cat /tmp/workflow/commit_sha)
+          echo "COMMIT_SHA=$COMMIT_SHA" >> $GITHUB_ENV
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+
+      # Gitタグを作成してプッシュ
+      - name: Create and push Git tag
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git tag -a $VERSION -m "Release $VERSION"
+          git push origin $VERSION
+
+      # AWS認証
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -83,72 +200,56 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # ECRログイン
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Set image tag
-        id: image-tag
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.version }}"
-          else
-            TAG="latest"
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "ECR_REPOSITORY_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_ENV
-
+      # Dockerイメージ作成
       - name: Build and push Docker image
         working-directory: backend
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
         run: |
+          echo "Building Docker image with tag: $VERSION"
           docker build \
             -f Dockerfile.prod \
             --build-arg DEFAULT_ALLOWED_HOSTS=${{ secrets.ALLOWED_HOSTS }} \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "Image pushed to ECR: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "Image pushed to ECR: $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION"
 
-      - name: Comment on PR with build info
-        if: github.event_name == 'pull_request'
+      # Issueにステータス更新
+      - name: Update issue with build status
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            const issueNumber = parseInt(process.env.ISSUE_NUMBER || github.event.issue.number);
+            
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ Backend image built and pushed to ECR.\nCommit: ' + context.sha + '\nImage tag: ${{ steps.image-tag.outputs.tag }}'
-            })
+              issue_number: issueNumber,
+              body: `✅ Version \`${process.env.VERSION}\` has been successfully processed.
+              
+              - Git tag \`${process.env.VERSION}\` created
+              - Docker image built and pushed to ECR: \`${process.env.ECR_REPOSITORY}:${process.env.VERSION}\`
+              
+              Deploying to production...`
+            });
+            
+            // Issueのラベルを更新
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['production', 'version-processed']
+            });
 
-  deploy:
-    runs-on: ubuntu-latest
-    needs: test-and-build
-    environment: production
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Set environment variables
-        run: |
-          echo "ECR_REPOSITORY_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_ENV
-          echo "IMAGE_TAG=${{ needs.test-and-build.outputs.image-tag }}" >> $GITHUB_ENV
-
+      # タスク定義を取得
       - name: Download current task definition
         run: |
           aws ecs describe-task-definition \
@@ -156,7 +257,7 @@ jobs:
             --query "taskDefinition" \
             --output json > task-definition-full.json
           
-          # 必要なフィールドのみを抽出（シンプルなバージョン）
+          # 必要なフィールドのみを抽出
           jq '{
             family: .family,
             executionRoleArn: .executionRoleArn,
@@ -168,11 +269,14 @@ jobs:
             memory: .memory
           }' task-definition-full.json > task-definition.json
 
+      # タスク定義を更新
       - name: Update task definition with new image
+        id: update-task-def
         run: |
+          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
           # Update the container image in the task definition
-          jq --arg IMAGE "$ECR_REPOSITORY_URI:$IMAGE_TAG" \
-             --arg VERSION "$IMAGE_TAG" \
+          jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$VERSION" \
+             --arg VERSION "$VERSION" \
              --arg ALLOWED_HOSTS "${{ secrets.ALLOWED_HOSTS }}" \
              '.containerDefinitions[0].image = $IMAGE | .containerDefinitions[0].environment += [{"name": "APP_VERSION", "value": $VERSION}, {"name": "ALLOWED_HOSTS", "value": $ALLOWED_HOSTS}]' \
              task-definition.json > new-task-definition.json
@@ -186,6 +290,7 @@ jobs:
           echo "New task definition registered: $NEW_TASK_DEF_ARN"
           echo "TASK_DEF_ARN=$NEW_TASK_DEF_ARN" >> $GITHUB_ENV
 
+      # ECSサービス更新
       - name: Update ECS service
         run: |
           aws ecs update-service \
@@ -194,25 +299,44 @@ jobs:
             --task-definition $TASK_DEF_ARN \
             --force-new-deployment
 
+      # デプロイ完了を待機
       - name: Wait for deployment to complete
         run: |
           aws ecs wait services-stable \
             --cluster cicd-sample-cluster-prod \
             --services cicd-sample-service-prod
 
+      # CloudFrontキャッシュ無効化
       - name: Invalidate CloudFront cache
         run: |
           aws cloudfront create-invalidation --distribution-id ${{ secrets.BACKEND_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
 
-      - name: Comment on PR with deployment info
-        if: github.event_name == 'pull_request'
+      # デプロイ完了をIssueに通知
+      - name: Update issue with deployment status
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            const issueNumber = parseInt(process.env.ISSUE_NUMBER || github.event.issue.number);
+            
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '🚀 Backend deployed to production environment.\nCommit: ' + context.sha + '\nVersion: ${{ env.IMAGE_TAG }}\nAPI URL: ${{ secrets.API_URL }}'
-            }) 
+              issue_number: issueNumber,
+              body: `🚀 Deployment completed!
+              
+              - Version: \`${process.env.VERSION}\`
+              - Environment: Production
+              - API URL: ${{ secrets.API_URL }}
+              
+              The deployment has been successfully completed.`
+            });
+            
+            // Issueをクローズ
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: 'closed',
+              labels: ['production', 'deployed']
+            }); 

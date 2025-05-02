@@ -7,6 +7,7 @@ on:
     paths:
       - 'frontend/**'
   pull_request:
+    types: [closed]
     branches:
       - production
     paths:
@@ -36,7 +37,8 @@ jobs:
     needs: validate-version
     if: |
       always() && 
-      (needs.validate-version.result == 'success' || github.event_name != 'workflow_dispatch')
+      (needs.validate-version.result == 'success' || github.event_name != 'workflow_dispatch') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.merged == true)
     environment: production
     permissions:
       id-token: write
