@@ -6,12 +6,6 @@ on:
       - production
     paths:
       - 'frontend/**'
-  pull_request:
-    types: [closed]
-    branches:
-      - production
-    paths:
-      - 'frontend/**'
   workflow_dispatch:
     inputs:
       version:
@@ -38,7 +32,7 @@ jobs:
     if: |
       always() && 
       (needs.validate-version.result == 'success' || github.event_name != 'workflow_dispatch') &&
-      (github.event_name != 'pull_request' || github.event.pull_request.merged == true)
+      (github.event_name != 'push' || github.ref == 'refs/heads/production')
     environment: production
     permissions:
       id-token: write
