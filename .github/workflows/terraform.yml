@@ -7,13 +7,6 @@ on:
       - production
     paths:
       - 'infrastructure/**'
-  pull_request:
-    types: [closed]
-    branches:
-      - develop
-      - production
-    paths:
-      - 'infrastructure/**'
   workflow_dispatch:
     inputs:
       environment:
@@ -37,7 +30,7 @@ env:
 jobs:
   terraform:
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/production')
     environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/production' && 'production' || 'development') }}
 
     steps:

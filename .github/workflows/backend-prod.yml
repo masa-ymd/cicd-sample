@@ -2,7 +2,7 @@
 # ===================================================
 # このワークフローは以下のフローで実行されます:
 #
-# 1. PRがproductionブランチにマージされると自動的に起動
+# 1. productionブランチへのプッシュ（PRマージを含む）で自動的に起動
 # 2. テストとビルド検証を行う
 # 3. Issueを作成し、ユーザーにセマンティックバージョン入力を促す
 # 4. ユーザーがIssueにコメントでバージョンを入力
@@ -22,12 +22,6 @@ on:
       - production
     paths:
       - 'backend/**'
-  pull_request:
-    types: [closed]
-    branches:
-      - production
-    paths:
-      - 'backend/**'
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -43,12 +37,10 @@ env:
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
 
 jobs:
-  # PRマージまたはプッシュ時に実行される初期ジョブ
+  # productionブランチへのプッシュ時に実行される初期ジョブ
   test-and-prepare:
     runs-on: ubuntu-latest
-    if: |
-      (github.event_name == 'pull_request' && github.event.pull_request.merged == true) ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/production')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/production'
     environment: production
     outputs:
       commit-sha: ${{ github.sha }}
