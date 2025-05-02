@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - develop
+      - '!production'
     paths:
       - 'backend/**'
   pull_request:
+    types: [closed]
     branches:
       - develop
     paths:
@@ -26,6 +28,8 @@ jobs:
   # テストとビルドジョブ
   test-and-build:
     runs-on: ubuntu-latest
+    # PRの場合はマージされた場合のみ実行
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     environment: development
     outputs:
       image-tag: ${{ steps.image-tag.outputs.tag }}
