@@ -8,6 +8,7 @@ on:
     paths:
       - 'infrastructure/**'
   pull_request:
+    types: [closed]
     branches:
       - develop
       - production
@@ -36,6 +37,7 @@ env:
 jobs:
   terraform:
     runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     environment: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/production' && 'production' || 'development') }}
 
     steps:
