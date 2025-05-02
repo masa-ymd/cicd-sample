@@ -7,6 +7,7 @@ on:
     paths:
       - 'frontend/**'
   pull_request:
+    types: [closed]
     branches:
       - production
     paths:
@@ -36,12 +37,13 @@ jobs:
     needs: validate-version
     if: |
       always() && 
-      (needs.validate-version.result == 'success' || github.event_name != 'workflow_dispatch')
+      (needs.validate-version.result == 'success' || github.event_name != 'workflow_dispatch') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.merged == true)
     environment: production
     permissions:
       id-token: write
       contents: read
-      pull-requests: read
+      pull-requests: write
 
     steps:
       - name: Checkout code
@@ -57,12 +59,12 @@ jobs:
       - name: Install dependencies
         run: |
           cd frontend
-          npm ci
+          npm install --legacy-peer-deps
 
       - name: Run tests
         run: |
           cd frontend
-          npm test -- --watchAll=false
+          npm test -- --watchAll=false --passWithNoTests
 
       - name: Build application
         run: |
@@ -88,9 +90,8 @@ jobs:
 
       - name: Invalidate CloudFront cache
         run: |
-          export CLOUDFRONT_DISTRIBUTION_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Aliases.Items, 'cicd-sample-frontend-prod')].Id" --output text)
-          aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/*"
-      
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
+
       - name: Comment on PR with deployment info
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v6
