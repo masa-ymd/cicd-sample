@@ -128,6 +128,7 @@ jobs:
   # Issueコメントからバージョンを取得して処理を継続するジョブ
   process-version-and-build:
     runs-on: ubuntu-latest
+    needs: [test-and-prepare]
     if: |
       github.event_name == 'issue_comment' &&
       contains(github.event.issue.labels.*.name, 'waiting-for-version') &&
