@@ -31,6 +31,9 @@ ENV RUBY_YJIT_ENABLE=1
 ENV RAILS_ENV=production
 ENV RAILS_LOG_TO_STDOUT=true
 
+# 本番環境用のアセットコンパイル（必要な場合）
+RUN bundle exec rails assets:precompile || echo "No assets to precompile or assets compilation is not needed"
+
 # ホスト認証用の環境変数（ビルド引数からデフォルト値を設定）
 ARG DEFAULT_ALLOWED_HOSTS=api.example.com
 ENV ALLOWED_HOSTS=${DEFAULT_ALLOWED_HOSTS}
