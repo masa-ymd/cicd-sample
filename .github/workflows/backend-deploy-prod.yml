@@ -65,21 +65,26 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # ECRリポジトリURIの設定
+      - name: Set ECR repository URI
+        run: |
+          echo "ECR_REPOSITORY_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+
       # Dockerイメージ作成
       - name: Build and push Docker image
         working-directory: backend
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          echo "Building Docker image with tag: ${{ github.event.inputs.version }}"
+          echo "Building Docker image with tag: $IMAGE_TAG"
+          echo "Using repository: $ECR_REPOSITORY"
           docker build \
             -f Dockerfile.prod \
             --build-arg DEFAULT_ALLOWED_HOSTS=${{ secrets.ALLOWED_HOSTS }} \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.event.inputs.version }} .
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.event.inputs.version }} $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.event.inputs.version }}
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "Image pushed to ECR: $ECR_REGISTRY/$ECR_REPOSITORY:${{ github.event.inputs.version }}"
+            -t $ECR_REPOSITORY_URI:$IMAGE_TAG .
+          docker tag $ECR_REPOSITORY_URI:$IMAGE_TAG $ECR_REPOSITORY_URI:latest
+          docker push $ECR_REPOSITORY_URI:$IMAGE_TAG
+          docker push $ECR_REPOSITORY_URI:latest
+          echo "Image pushed to ECR: $ECR_REPOSITORY_URI:$IMAGE_TAG"
 
       # タスク定義を取得
       - name: Download current task definition
@@ -105,10 +110,9 @@ jobs:
       - name: Update task definition with new image
         id: update-task-def
         run: |
-          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
           # Update the container image in the task definition
-          jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.event.inputs.version }}" \
-             --arg VERSION "${{ github.event.inputs.version }}" \
+          jq --arg IMAGE "$ECR_REPOSITORY_URI:$IMAGE_TAG" \
+             --arg VERSION "$IMAGE_TAG" \
              --arg ALLOWED_HOSTS "${{ secrets.ALLOWED_HOSTS }}" \
              '.containerDefinitions[0].image = $IMAGE | .containerDefinitions[0].environment += [{"name": "APP_VERSION", "value": $VERSION}, {"name": "ALLOWED_HOSTS", "value": $ALLOWED_HOSTS}]' \
              task-definition.json > new-task-definition.json
@@ -146,4 +150,4 @@ jobs:
       # デプロイ完了通知
       - name: Deployment notification
         run: |
-          echo "::notice::🚀 デプロイが完了しました！バージョン: ${{ github.event.inputs.version }}, 環境: 本番環境" 
+          echo "::notice::🚀 デプロイが完了しました！バージョン: $IMAGE_TAG, 環境: 本番環境" 
