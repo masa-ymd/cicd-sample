@@ -5,8 +5,8 @@ on:
   workflow_dispatch:
     inputs:
       version_to_rollback:
-        description: 'ロールバックするS3バージョンID（空白の場合は直前のバージョンを使用）'
-        required: false
+        description: 'ロールバックするバージョン（例: v1.2.3, main-abc123, 日付など）'
+        required: true
         type: string
       confirm_rollback:
         description: 'ロールバックを実行するには「CONFIRM」と入力してください'
@@ -41,54 +41,54 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
       
-      # S3バケットのオブジェクトバージョンを取得（特定バージョンIDが指定されていない場合）
-      - name: S3バケットのオブジェクトバージョンを取得
-        if: github.event.inputs.version_to_rollback == ''
+      # 利用可能なバージョンを一覧表示
+      - name: 利用可能なバージョンを一覧表示
         run: |
-          echo "S3バケット内のオブジェクトとそのバージョンを一覧表示します..."
-          # 開発環境用のS3バケット名を使用
-          aws s3api list-object-versions --bucket cicd-sample-frontend-dev --prefix "" --max-items 10 > object_versions.json
-          cat object_versions.json
+          echo "S3バケット内の利用可能なバージョンを一覧表示します..."
+          aws s3 ls s3://cicd-sample-frontend-dev/ --delimiter "/" || echo "注意: ディレクトリが見つかりませんでした"
       
-      # 各オブジェクトを前のバージョンに戻す（特定バージョンIDが指定されていない場合）
-      - name: 各オブジェクトを前のバージョンに戻す
-        if: github.event.inputs.version_to_rollback == ''
+      # 指定されたバージョンが存在するか確認
+      - name: 指定されたバージョンの存在確認
         run: |
-          echo "前のバージョンにロールバックしています..."
-          # バケット内のすべてのオブジェクトを取得
-          aws s3api list-objects-v2 --bucket cicd-sample-frontend-dev --query 'Contents[].Key' --output text | while read -r key; do
-            # このオブジェクトの前のバージョンを取得
-            previous_version=$(aws s3api list-object-versions --bucket cicd-sample-frontend-dev --prefix "$key" --query 'Versions[1].VersionId' --output text)
-            if [ "$previous_version" != "None" ] && [ ! -z "$previous_version" ]; then
-              echo "$key を バージョン $previous_version にロールバックしています"
-              aws s3api copy-object --bucket cicd-sample-frontend-dev --key "$key" --copy-source "cicd-sample-frontend-dev/$key?versionId=$previous_version"
-            else
-              echo "$key の前のバージョンが見つかりませんでした。スキップします"
-            fi
-          done
+          VERSION="${{ github.event.inputs.version_to_rollback }}"
+          
+          # バージョンディレクトリが存在するか確認
+          if aws s3 ls "s3://cicd-sample-frontend-dev/$VERSION/" --delimiter "/" 2>/dev/null; then
+            echo "指定されたバージョン $VERSION は存在します"
+            echo "VERSION_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "警告: 指定されたバージョン $VERSION はS3バケットに存在しません"
+            echo "利用可能なバージョンのいずれかを選択してください"
+            echo "VERSION_EXISTS=false" >> $GITHUB_ENV
+            exit 1
+          fi
       
-      # 特定バージョンにロールバック（バージョンIDが指定されている場合）
-      - name: 特定バージョンにロールバック
-        if: github.event.inputs.version_to_rollback != ''
+      # S3バケットのデフォルトルートオブジェクトを更新
+      - name: ルートオブジェクトの更新
+        if: env.VERSION_EXISTS == 'true'
         run: |
-          echo "すべてのオブジェクトをバージョン ${{ github.event.inputs.version_to_rollback }} にロールバックしています..."
-          # ここではバージョンIDが全体のデプロイメントに適用されると仮定しています
-          # バージョン管理戦略によっては、この論理を調整する必要があるかもしれません
-          aws s3api list-objects-v2 --bucket cicd-sample-frontend-dev --query 'Contents[].Key' --output text | while read -r key; do
-            echo "$key を バージョン ${{ github.event.inputs.version_to_rollback }} にロールバックしています"
-            aws s3api copy-object --bucket cicd-sample-frontend-dev --key "$key" --copy-source "cicd-sample-frontend-dev/$key?versionId=${{ github.event.inputs.version_to_rollback }}"
-          done
+          VERSION="${{ github.event.inputs.version_to_rollback }}"
+          echo "ルートオブジェクトを更新してバージョン $VERSION にリダイレクトします..."
+          
+          # index.htmlをコピーして最新のデフォルトバージョンにする
+          aws s3 cp "s3://cicd-sample-frontend-dev/$VERSION/index.html" "s3://cicd-sample-frontend-dev/index.html" --metadata-directive REPLACE
+
+          # indexファイルが更新されたことを確認
+          echo "ルートインデックスファイルが更新されました"
+          
+          # バージョン情報をversion.jsonに保存
+          echo "{\"version\": \"$VERSION\", \"rollback_date\": \"$(date --iso-8601=seconds)\", \"rollback_by\": \"github-actions\"}" > version.json
+          aws s3 cp version.json "s3://cicd-sample-frontend-dev/version.json" --metadata-directive REPLACE
       
       # CloudFrontのキャッシュを無効化
       - name: CloudFrontキャッシュの無効化
         run: |
           echo "CloudFrontキャッシュを無効化しています..."
-          # 開発環境用のCloudFrontディストリビューションIDを使用
-          aws cloudfront create-invalidation --distribution-id ${{ secrets.DEV_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
       
       # ロールバックの完了サマリー
       - name: ロールバック完了サマリー
         run: |
           echo "✅ 開発環境フロントエンドのロールバックが完了しました"
-          echo "🔄 S3オブジェクトは ${{ github.event.inputs.version_to_rollback == '' && '前のバージョン' || github.event.inputs.version_to_rollback }} にロールバックされました"
+          echo "🔄 バージョン ${{ github.event.inputs.version_to_rollback }} にロールバックされました"
           echo "🧹 CloudFrontキャッシュがクリアされました" 
