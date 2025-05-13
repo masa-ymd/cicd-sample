@@ -42,6 +42,9 @@ jobs:
       contents: read
     
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+    
       # AWS認証情報の設定
       - name: AWS認証情報の設定
         uses: aws-actions/configure-aws-credentials@v2
@@ -72,7 +75,7 @@ jobs:
             exit 1
           fi
       
-      # バックアップの作成（現在のcurrentフォルダの状態を保存）
+      # バックアップ処理はTerraform前のバックアップステップとして保持
       - name: 現在のcurrentフォルダをバックアップ
         if: env.VERSION_EXISTS == 'true'
         run: |
@@ -88,30 +91,38 @@ jobs:
             echo "currentフォルダが存在しません。バックアップをスキップします。"
           fi
       
-      # currentフォルダの内容を指定されたバージョンで置き換え
-      - name: currentフォルダの更新
+      # Terraformを使用してロールバック実行
+      - name: Setup Terraform
+        if: env.VERSION_EXISTS == 'true'
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.6
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Terraform Init
         if: env.VERSION_EXISTS == 'true'
         run: |
-          VERSION="${{ github.event.inputs.version_to_rollback }}"
-          echo "currentフォルダの内容をバージョン $VERSION に置き換えます..."
-          
-          # 指定されたバージョンフォルダからcurrentフォルダへコピー
-          aws s3 sync s3://cicd-sample-frontend-prod/$VERSION/ s3://cicd-sample-frontend-prod/current/ --delete
-          
-          echo "currentフォルダが更新されました"
-          
-          # バージョン情報をversion.jsonに保存
-          echo "{\"version\": \"$VERSION\", \"rollback_date\": \"$(date --iso-8601=seconds)\", \"rollback_by\": \"github-actions\"}" > version.json
-          aws s3 cp version.json s3://cicd-sample-frontend-prod/current/version.json --metadata-directive REPLACE
-      
-      # CloudFrontのキャッシュを無効化
-      - name: CloudFrontキャッシュの無効化
+          cd infrastructure/environments/prod
+          terraform init
+
+      - name: Create Terraform Variables File for Rollback
+        if: env.VERSION_EXISTS == 'true'
         run: |
-          echo "CloudFrontキャッシュを無効化しています..."
-          aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
+          cat > infrastructure/environments/prod/deploy.auto.tfvars << EOF
+          frontend_version = "${{ github.event.inputs.version_to_rollback }}"
+          # ビルドパスは空のまま（既存のS3内のバージョンを使用）
+          frontend_build_path = ""
+          EOF
+
+      - name: Execute Rollback with Terraform
+        if: env.VERSION_EXISTS == 'true'
+        run: |
+          cd infrastructure/environments/prod
+          terraform apply -auto-approve
       
       # ロールバックの完了サマリー
       - name: ロールバック完了サマリー
+        if: env.VERSION_EXISTS == 'true'
         run: |
           echo "✅ フロントエンドのロールバックが完了しました"
           echo "🔄 currentフォルダの内容がバージョン ${{ github.event.inputs.version_to_rollback }} に更新されました"
