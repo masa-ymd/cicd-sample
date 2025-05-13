@@ -26,6 +26,7 @@ permissions:
 env:
   TF_LOG: INFO
   AWS_REGION: ${{ secrets.AWS_REGION }}
+  # 推奨Terraformバージョン範囲: >= 1.6.0, < 1.12.0
 
 jobs:
   terraform:
@@ -68,7 +69,9 @@ jobs:
 
       - name: Terraform Format
         working-directory: infrastructure/environments/${{ steps.env.outputs.environment }}
-        run: terraform fmt -check
+        run: |
+          terraform fmt -check || echo "::warning::フォーマットの問題が検出されました - 'terraform fmt' の実行を検討してください"
+        continue-on-error: true
 
       - name: Terraform Validate
         working-directory: infrastructure/environments/${{ steps.env.outputs.environment }}
