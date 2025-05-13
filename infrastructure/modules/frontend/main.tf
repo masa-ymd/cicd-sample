@@ -161,8 +161,9 @@ resource "aws_s3_bucket_policy" "frontend" {
   })
 }
 
-# S3へのファイルアップロード（terraform applyで実行）
+# 通常デプロイ用 - ビルドフォルダからS3へのアップロード
 resource "null_resource" "upload_to_s3" {
+  # ビルドパスが指定されている場合のみ実行
   count = var.frontend_build_path != "" ? 1 : 0
 
   triggers = {
@@ -183,6 +184,44 @@ resource "null_resource" "upload_to_s3" {
       
       # CloudFrontのキャッシュを無効化
       aws cloudfront create-invalidation --distribution-id ${aws_cloudfront_distribution.frontend.id} --paths "/*"
+    EOT
+  }
+
+  depends_on = [
+    aws_s3_bucket.frontend,
+    aws_cloudfront_distribution.frontend,
+    aws_s3_bucket_policy.frontend
+  ]
+}
+
+# ロールバック用 - 既存のバージョンディレクトリからcurrentへのコピー
+resource "null_resource" "rollback_to_version" {
+  # ビルドパスが空で、バージョンが指定されている場合のみ実行
+  count = var.frontend_build_path == "" && var.frontend_version != "" ? 1 : 0
+
+  triggers = {
+    version = var.frontend_version
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+      # 指定されたバージョンディレクトリの存在確認
+      if ! aws s3 ls "s3://${aws_s3_bucket.frontend.bucket}/${var.frontend_version}/" --delimiter "/" 2>/dev/null; then
+        echo "エラー: 指定されたバージョン ${var.frontend_version} はS3バケットに存在しません"
+        exit 1
+      fi
+      
+      # 指定されたバージョンからcurrentへコピー（ロールバック）
+      aws s3 sync s3://${aws_s3_bucket.frontend.bucket}/${var.frontend_version}/ s3://${aws_s3_bucket.frontend.bucket}/current/ --delete
+      
+      # バージョン情報ファイルを作成
+      echo "{\"version\": \"${var.frontend_version}\", \"rollback_date\": \"$(date --iso-8601=seconds)\", \"rollback_by\": \"terraform\"}" > /tmp/version.json
+      aws s3 cp /tmp/version.json s3://${aws_s3_bucket.frontend.bucket}/current/version.json --metadata-directive REPLACE
+      
+      # CloudFrontのキャッシュを無効化
+      aws cloudfront create-invalidation --distribution-id ${aws_cloudfront_distribution.frontend.id} --paths "/*"
+      
+      echo "✅ フロントエンドを ${var.frontend_version} バージョンにロールバックしました"
     EOT
   }
 
