@@ -51,9 +51,24 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Deploy to S3
+      - name: Generate version identifier
         run: |
-          aws s3 sync frontend/build/ s3://cicd-sample-frontend-dev/ --delete
+          # コミットハッシュを使用してバージョンを生成
+          VERSION="$(echo $GITHUB_SHA | cut -c1-7)-dev"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "デプロイバージョン: $VERSION"
+
+      - name: Deploy to S3 versioned directory and current
+        run: |
+          # 1. バージョン付きディレクトリにデプロイ
+          aws s3 sync frontend/build/ s3://cicd-sample-frontend-dev/${{ env.VERSION }}/ --delete
+          
+          # 2. カレントディレクトリにコピー（CloudFrontから参照される）
+          aws s3 sync s3://cicd-sample-frontend-dev/${{ env.VERSION }}/ s3://cicd-sample-frontend-dev/current/ --delete
+          
+          # 3. バージョン情報ファイルを作成
+          echo "{\"version\": \"${{ env.VERSION }}\", \"deploy_date\": \"$(date --iso-8601=seconds)\", \"commit\": \"$GITHUB_SHA\", \"branch\": \"develop\"}" > version.json
+          aws s3 cp version.json s3://cicd-sample-frontend-dev/current/version.json --metadata-directive REPLACE
 
       - name: Invalidate CloudFront cache
         run: |
@@ -69,5 +84,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '🚀 Frontend deployed to development environment.\nCommit: ' + context.sha + '\nURL: ${{ secrets.FRONTEND_URL }}'
+              body: '🚀 フロントエンドが開発環境にデプロイされました。\nコミット: ' + context.sha + '\nバージョン: ${{ env.VERSION }}\nURL: ${{ secrets.FRONTEND_URL }}'
             }) 
