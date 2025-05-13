@@ -57,7 +57,7 @@ jobs:
       - name: 利用可能なバージョンを一覧表示
         run: |
           echo "S3バケット内の利用可能なバージョンを一覧表示します..."
-          aws s3 ls s3://cicd-sample-frontend-prod/ --delimiter "/" | grep -v "current/" | grep -v "backup-" | grep "^.*v[0-9]\.[0-9]\.[0-9].*/$" || echo "注意: バージョンフォルダが見つかりませんでした"
+          aws s3 ls s3://cicd-sample-frontend-prod/ | grep -v "current/" | grep -v "backup-" | grep "^.*v[0-9]\.[0-9]\.[0-9].*$" || echo "注意: バージョンフォルダが見つかりませんでした"
       
       # 指定されたバージョンが存在するか確認
       - name: 指定されたバージョンの存在確認
@@ -65,7 +65,7 @@ jobs:
           VERSION="${{ github.event.inputs.version_to_rollback }}"
           
           # バージョンディレクトリが存在するか確認
-          if aws s3 ls "s3://cicd-sample-frontend-prod/$VERSION/" --delimiter "/" 2>/dev/null; then
+          if aws s3 ls "s3://cicd-sample-frontend-prod/$VERSION/" &>/dev/null; then
             echo "指定されたバージョン $VERSION は存在します"
             echo "VERSION_EXISTS=true" >> $GITHUB_ENV
           else
@@ -83,7 +83,7 @@ jobs:
           echo "現在のcurrentフォルダの状態をバックアップします: backup-$TIMESTAMP/"
           
           # currentフォルダが存在するか確認
-          if aws s3 ls "s3://cicd-sample-frontend-prod/current/" --delimiter "/" 2>/dev/null; then
+          if aws s3 ls "s3://cicd-sample-frontend-prod/current/" &>/dev/null; then
             # currentフォルダの内容をbackupフォルダにコピー
             aws s3 sync s3://cicd-sample-frontend-prod/current/ s3://cicd-sample-frontend-prod/backup-$TIMESTAMP/ --delete
             echo "backup-$TIMESTAMP/ フォルダにバックアップを作成しました"
