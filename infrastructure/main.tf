@@ -37,7 +37,7 @@ variable "project" {
 # フロントエンドデプロイ用の変数
 variable "frontend_version" {
   type    = string
-  default = "latest"
+  default = null
   description = "フロントエンドのデプロイバージョン"
 }
 
