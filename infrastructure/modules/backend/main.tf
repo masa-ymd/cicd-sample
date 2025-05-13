@@ -320,7 +320,7 @@ resource "aws_ecs_service" "main" {
   name            = "${var.project}-service-${var.environment}"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.main.arn
-  desired_count   = 1
+  desired_count   = 0
   launch_type     = "FARGATE"
   
   network_configuration {
@@ -338,6 +338,14 @@ resource "aws_ecs_service" "main" {
   depends_on = [
     aws_lb_listener.http
   ]
+  
+  # GitHub ActionsとTerraformの役割分担のため、以下の項目は変更を無視する
+  lifecycle {
+    ignore_changes = [
+      task_definition,  # タスク定義はGitHub Actionsで更新
+      desired_count     # オートスケーリングや運用時の手動調整を許可
+    ]
+  }
   
   tags = {
     Name        = "${var.project}-service-${var.environment}"
