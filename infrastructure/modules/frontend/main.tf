@@ -15,7 +15,7 @@ variable "api_endpoint" {
 # フロントエンドのデプロイで使用する変数
 variable "frontend_version" {
   type    = string
-  default = "latest"
+  default = null
   description = "フロントエンドのデプロイバージョン"
 }
 
@@ -163,8 +163,8 @@ resource "aws_s3_bucket_policy" "frontend" {
 
 # 通常デプロイ用 - ビルドフォルダからS3へのアップロード
 resource "null_resource" "upload_to_s3" {
-  # ビルドパスが指定されている場合のみ実行
-  count = var.frontend_build_path != "" ? 1 : 0
+  # ビルドパスが指定されていて、バージョンも指定されている場合のみ実行
+  count = var.frontend_build_path != "" && var.frontend_version != null ? 1 : 0
 
   triggers = {
     version = var.frontend_version
@@ -196,8 +196,8 @@ resource "null_resource" "upload_to_s3" {
 
 # ロールバック用 - 既存のバージョンディレクトリからcurrentへのコピー
 resource "null_resource" "rollback_to_version" {
-  # ビルドパスが空で、バージョンが指定されている場合のみ実行
-  count = var.frontend_build_path == "" && var.frontend_version != "" ? 1 : 0
+  # ビルドパスが空で、バージョンが明示的に指定されている場合のみ実行
+  count = var.frontend_build_path == "" && var.frontend_version != null ? 1 : 0
 
   triggers = {
     version = var.frontend_version
