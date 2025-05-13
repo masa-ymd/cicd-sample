@@ -66,19 +66,19 @@ jobs:
 
       - name: Terraform Init
         run: |
-          cd cicd-sample/infrastructure/environments/dev
+          cd infrastructure/environments/dev
           terraform init
 
       - name: Create Terraform Variables File
         run: |
-          cat > cicd-sample/infrastructure/environments/dev/deploy.auto.tfvars << EOF
+          cat > infrastructure/environments/dev/deploy.auto.tfvars << EOF
           frontend_version = "${{ env.VERSION }}"
           frontend_build_path = "${GITHUB_WORKSPACE}/frontend/build"
           EOF
 
       - name: Deploy Frontend with Terraform
         run: |
-          cd cicd-sample/infrastructure/environments/dev
+          cd infrastructure/environments/dev
           terraform apply -auto-approve
 
       - name: Comment on PR with deployment info
