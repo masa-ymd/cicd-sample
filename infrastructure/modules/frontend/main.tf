@@ -206,7 +206,7 @@ resource "null_resource" "rollback_to_version" {
   provisioner "local-exec" {
     command = <<EOT
       # 指定されたバージョンディレクトリの存在確認
-      if ! aws s3 ls "s3://${aws_s3_bucket.frontend.bucket}/${var.frontend_version}/" --delimiter "/" 2>/dev/null; then
+      if ! aws s3 ls "s3://${aws_s3_bucket.frontend.bucket}/${var.frontend_version}/" &>/dev/null; then
         echo "エラー: 指定されたバージョン ${var.frontend_version} はS3バケットに存在しません"
         exit 1
       fi
