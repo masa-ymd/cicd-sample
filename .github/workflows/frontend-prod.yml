@@ -85,21 +85,28 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "フロントエンドバージョン: $VERSION をデプロイします"
 
-      - name: Deploy to S3 versioned directory and current
-        run: |
-          # 1. バージョン付きディレクトリにデプロイ
-          aws s3 sync frontend/build/ s3://cicd-sample-frontend-prod/${{ env.VERSION }}/ --delete
-          
-          # 2. カレントディレクトリにコピー（CloudFrontから参照される）
-          aws s3 sync s3://cicd-sample-frontend-prod/${{ env.VERSION }}/ s3://cicd-sample-frontend-prod/current/ --delete
-          
-          # 3. バージョン情報ファイルを作成
-          echo "{\"version\": \"${{ env.VERSION }}\", \"deploy_date\": \"$(date --iso-8601=seconds)\", \"commit\": \"$GITHUB_SHA\", \"branch\": \"production\"}" > version.json
-          aws s3 cp version.json s3://cicd-sample-frontend-prod/current/version.json --metadata-directive REPLACE
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.6
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
-      - name: Invalidate CloudFront cache
+      - name: Terraform Init
         run: |
-          aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
+          cd cicd-sample/infrastructure/environments/prod
+          terraform init
+
+      - name: Create Terraform Variables File
+        run: |
+          cat > cicd-sample/infrastructure/environments/prod/deploy.auto.tfvars << EOF
+          frontend_version = "${{ env.VERSION }}"
+          frontend_build_path = "${GITHUB_WORKSPACE}/frontend/build"
+          EOF
+
+      - name: Deploy Frontend with Terraform
+        run: |
+          cd cicd-sample/infrastructure/environments/prod
+          terraform apply -auto-approve
 
       - name: Comment on PR with deployment info
         if: github.event_name == 'pull_request'

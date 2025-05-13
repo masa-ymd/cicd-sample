@@ -7,10 +7,25 @@ terraform {
   }
 }
 
+# フロントエンドデプロイ用の変数
+variable "frontend_version" {
+  type    = string
+  default = "latest"
+}
+
+variable "frontend_build_path" {
+  type    = string
+  default = ""
+}
+
 module "infrastructure" {
   source = "../../"
   
   environment = "prod"
   project     = "cicd-sample"
   aws_region  = "ap-northeast-1"
+  
+  # フロントエンドデプロイ用の変数を渡す
+  frontend_version   = var.frontend_version
+  frontend_build_path = var.frontend_build_path
 } 
