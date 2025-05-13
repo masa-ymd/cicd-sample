@@ -34,6 +34,19 @@ variable "project" {
   default = "cicd-sample"
 }
 
+# フロントエンドデプロイ用の変数
+variable "frontend_version" {
+  type    = string
+  default = "latest"
+  description = "フロントエンドのデプロイバージョン"
+}
+
+variable "frontend_build_path" {
+  type    = string
+  default = ""
+  description = "フロントエンドのビルドディレクトリへのパス"
+}
+
 # 環境特有のモジュールのインポート
 # フロントエンドモジュール
 module "frontend" {
@@ -42,6 +55,10 @@ module "frontend" {
   environment = var.environment
   project     = var.project
   api_endpoint = module.backend.api_endpoint
+  
+  # フロントエンドデプロイ用の変数
+  frontend_version   = var.frontend_version
+  frontend_build_path = var.frontend_build_path
 }
 
 # バックエンドモジュール

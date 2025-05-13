@@ -12,6 +12,19 @@ variable "api_endpoint" {
   description = "Backend API endpoint URL"
 }
 
+# フロントエンドのデプロイで使用する変数
+variable "frontend_version" {
+  type    = string
+  default = "latest"
+  description = "フロントエンドのデプロイバージョン"
+}
+
+variable "frontend_build_path" {
+  type    = string
+  default = ""
+  description = "フロントエンドのビルドディレクトリへのパス"
+}
+
 # フロントエンド資産用のS3バケット
 resource "aws_s3_bucket" "frontend" {
   bucket = "${var.project}-frontend-${var.environment}"
@@ -146,6 +159,38 @@ resource "aws_s3_bucket_policy" "frontend" {
       }
     ]
   })
+}
+
+# S3へのファイルアップロード（terraform applyで実行）
+resource "null_resource" "upload_to_s3" {
+  count = var.frontend_build_path != "" ? 1 : 0
+
+  triggers = {
+    version = var.frontend_version
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+      # ビルドファイルをS3にアップロード
+      aws s3 sync ${var.frontend_build_path}/ s3://${aws_s3_bucket.frontend.bucket}/${var.frontend_version}/ --delete
+      
+      # カレントディレクトリにコピー（CloudFrontから参照される）
+      aws s3 sync s3://${aws_s3_bucket.frontend.bucket}/${var.frontend_version}/ s3://${aws_s3_bucket.frontend.bucket}/current/ --delete
+      
+      # バージョン情報ファイルを作成
+      echo "{\"version\": \"${var.frontend_version}\", \"deploy_date\": \"$(date --iso-8601=seconds)\"}" > /tmp/version.json
+      aws s3 cp /tmp/version.json s3://${aws_s3_bucket.frontend.bucket}/current/version.json --metadata-directive REPLACE
+      
+      # CloudFrontのキャッシュを無効化
+      aws cloudfront create-invalidation --distribution-id ${aws_cloudfront_distribution.frontend.id} --paths "/*"
+    EOT
+  }
+
+  depends_on = [
+    aws_s3_bucket.frontend,
+    aws_cloudfront_distribution.frontend,
+    aws_s3_bucket_policy.frontend
+  ]
 }
 
 # Output CloudFront URL
