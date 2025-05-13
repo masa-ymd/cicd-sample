@@ -55,8 +55,9 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version_to_rollback }}"
           
-          # バージョンディレクトリが存在するか確認
-          if aws s3 ls "s3://cicd-sample-frontend-dev/$VERSION/" &>/dev/null; then
+          # バージョンディレクトリが存在するか確認（出力を表示せず終了ステータスのみ確認）
+          aws s3 ls "s3://cicd-sample-frontend-dev/$VERSION/" > /dev/null 2>&1
+          if [ $? -eq 0 ]; then
             echo "指定されたバージョン $VERSION は存在します"
             echo "VERSION_EXISTS=true" >> $GITHUB_ENV
           else
@@ -74,7 +75,8 @@ jobs:
           echo "現在のcurrentフォルダの状態をバックアップします: backup-$TIMESTAMP/"
           
           # currentフォルダが存在するか確認
-          if aws s3 ls "s3://cicd-sample-frontend-dev/current/" &>/dev/null; then
+          aws s3 ls "s3://cicd-sample-frontend-dev/current/" > /dev/null 2>&1
+          if [ $? -eq 0 ]; then
             # currentフォルダの内容をbackupフォルダにコピー
             aws s3 sync s3://cicd-sample-frontend-dev/current/ s3://cicd-sample-frontend-dev/backup-$TIMESTAMP/ --delete
             echo "backup-$TIMESTAMP/ フォルダにバックアップを作成しました"
