@@ -30,7 +30,7 @@ function App() {
       <header className="App-header">
         <h1>CICD Sample Frontend</h1>
         {/* APIからのレスポンス表示（エラーがあればエラーメッセージを表示） */}
-        <p>API Response: {error || data} ! new version!</p>
+        <p>API Response: {error || data} ! new version with terraform!</p>
       </header>
     </div>
   );
