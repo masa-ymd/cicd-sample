@@ -47,6 +47,19 @@ variable "frontend_build_path" {
   description = "フロントエンドのビルドディレクトリへのパス"
 }
 
+# バックエンドデプロイ用の変数
+variable "backend_version" {
+  type    = string
+  default = null
+  description = "バックエンドのデプロイバージョン - ECRイメージのタグを指定します。このパラメータを設定することで、ECSタスク定義で使用されるDockerイメージが変更されます。"
+}
+
+variable "backend_allowed_hosts" {
+  type    = string
+  default = "*"
+  description = "バックエンドの許可されたホスト - Railsアプリケーションが許可するホスト名のリスト（カンマ区切り）。"
+}
+
 # 環境特有のモジュールのインポート
 # フロントエンドモジュール
 module "frontend" {
@@ -67,6 +80,10 @@ module "backend" {
   
   environment = var.environment
   project     = var.project
+  
+  # バックエンドデプロイ用の変数
+  backend_version      = var.backend_version
+  backend_allowed_hosts = var.backend_allowed_hosts
 }
 
 # 出力値の定義
