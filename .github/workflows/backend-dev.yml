@@ -106,7 +106,7 @@ jobs:
               body: '✅ Backend image built and pushed to ECR.\nCommit: ' + context.sha + '\nImage tag: ${{ steps.image-tag.outputs.tag }}'
             })
 
-  # デプロイジョブ
+  # デプロイジョブ（Terraformを使用）
   deploy:
     runs-on: ubuntu-latest
     needs: test-and-build
@@ -123,69 +123,32 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-
       - name: Set environment variables
         run: |
-          echo "ECR_REPOSITORY_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}" >> $GITHUB_ENV
           echo "IMAGE_TAG=${{ needs.test-and-build.outputs.image-tag }}" >> $GITHUB_ENV
 
-      - name: Download current task definition
-        run: |
-          aws ecs describe-task-definition \
-            --task-definition cicd-sample-task-dev \
-            --query "taskDefinition" \
-            --output json > task-definition-full.json
-          
-          # 必要なフィールドのみを抽出（シンプルなバージョン）
-          jq '{
-            family: .family,
-            executionRoleArn: .executionRoleArn,
-            networkMode: .networkMode,
-            containerDefinitions: .containerDefinitions,
-            volumes: .volumes,
-            requiresCompatibilities: .requiresCompatibilities,
-            cpu: .cpu,
-            memory: .memory
-          }' task-definition-full.json > task-definition.json
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.6
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
-      - name: Update task definition with new image
+      - name: Terraform Init
         run: |
-          # Update the container image in the task definition
-          jq --arg IMAGE "$ECR_REPOSITORY_URI:$IMAGE_TAG" \
-             --arg VERSION "$IMAGE_TAG" \
-             --arg ALLOWED_HOSTS "${{ secrets.ALLOWED_HOSTS }}" \
-             '.containerDefinitions[0].image = $IMAGE | .containerDefinitions[0].environment += [{"name": "APP_VERSION", "value": $VERSION}, {"name": "ALLOWED_HOSTS", "value": $ALLOWED_HOSTS}]' \
-             task-definition.json > new-task-definition.json
-          
-          # Register the updated task definition
-          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://new-task-definition.json \
-            --query "taskDefinition.taskDefinitionArn" \
-            --output text)
-          
-          echo "New task definition registered: $NEW_TASK_DEF_ARN"
-          echo "TASK_DEF_ARN=$NEW_TASK_DEF_ARN" >> $GITHUB_ENV
+          cd infrastructure/environments/dev
+          terraform init
 
-      - name: Update ECS service
+      - name: Create Terraform Variables File
         run: |
-          aws ecs update-service \
-            --cluster cicd-sample-cluster-dev \
-            --service cicd-sample-service-dev \
-            --task-definition $TASK_DEF_ARN \
-            --force-new-deployment
+          cat > infrastructure/environments/dev/deploy.auto.tfvars << EOF
+          backend_version = "${{ env.IMAGE_TAG }}"
+          backend_allowed_hosts = "${{ secrets.ALLOWED_HOSTS }}"
+          EOF
 
-      - name: Wait for deployment to complete
+      - name: Deploy Backend with Terraform
         run: |
-          aws ecs wait services-stable \
-            --cluster cicd-sample-cluster-dev \
-            --services cicd-sample-service-dev
-
-      - name: Invalidate CloudFront cache
-        run: |
-          aws cloudfront create-invalidation --distribution-id ${{ secrets.BACKEND_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
+          cd infrastructure/environments/dev
+          terraform apply -auto-approve
 
       - name: Comment on PR with deployment info
         if: github.event_name == 'pull_request'

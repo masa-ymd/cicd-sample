@@ -66,8 +66,7 @@ cicd-sample/
    - アプリケーションのビルドとテスト
    - バックエンド用のDockerイメージのビルド
    - `<git-hash>-dev`タグでECRにプッシュ
-   - ECSタスク定義の更新
-   - 開発環境へのデプロイ
+   - Terraformを使用して開発環境にフロントエンドとバックエンドをデプロイ
 4. 本番リリースの場合:
    - `develop`から`production`へのプルリクエストを作成
    - プロンプトが表示されたらセマンティックバージョンを提供
@@ -284,17 +283,14 @@ aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --
 docker tag $ECR_REPOSITORY_DEV:initial $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY_DEV:initial
 docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY_DEV:initial
 
-# タスク定義の更新（実際のECSサービス名に合わせて調整）
-aws ecs describe-task-definition --task-definition cicd-sample-task-dev --query "taskDefinition" --output json > task-definition.json
+# Terraformを使用してバックエンドをデプロイ
+cd ../infrastructure/environments/dev
+cat > deploy.auto.tfvars << EOF
+backend_version = "initial"
+backend_allowed_hosts = "localhost,127.0.0.1,cicd-sample-alb-dev-*.ap-northeast-1.elb.amazonaws.com,*.cloudfront.net"
+EOF
 
-# タスク定義にALLOWED_HOSTS環境変数を追加
-jq '.containerDefinitions[0].environment += [{"name": "ALLOWED_HOSTS", "value": "localhost,127.0.0.1,cicd-sample-alb-dev-*.ap-northeast-1.elb.amazonaws.com,*.cloudfront.net"}]' task-definition.json > new-task-definition.json
-
-# 新しいタスク定義を登録
-aws ecs register-task-definition --cli-input-json file://new-task-definition.json
-
-# サービスを更新
-aws ecs update-service --cluster cicd-sample-cluster-dev --service cicd-sample-service-dev --force-new-deployment --region $AWS_REGION
+terraform apply -auto-approve
 ```
 
 ### 5. CI/CDパイプラインのテスト
@@ -314,6 +310,18 @@ aws ecs update-service --cluster cicd-sample-cluster-dev --service cicd-sample-s
    - Docker構築時: `--build-arg DEFAULT_ALLOWED_HOSTS=ホスト名1,ホスト名2,...`
    - コンテナ実行時: `-e ALLOWED_HOSTS=ホスト名1,ホスト名2,...`
    - 開発環境では自動的に全てのホストが許可されます（`Rails.env.development?`の場合）
+
+4. **Terraformを使用したバックエンドデプロイ**: バックエンドのデプロイ処理がAWS CLIからTerraformに変更され、フロントエンドと同じ方法でInfrastructure as Codeによる管理が可能になりました。これにより:
+   - デプロイプロセスの統一化（フロントエンドとバックエンド）
+   - インフラストラクチャのコード化の一貫性向上
+   - バージョン管理とロールバックが容易に
+   
+   具体的には以下の管理がTerraformに移行されました:
+   - ECSタスク定義での使用するECRイメージバージョンの選択 (`backend_version`変数で制御)
+   - ECSサービスでのタスク定義の適用とデプロイ
+   - CloudFrontキャッシュの無効化処理
+
+   これによりGitHub Actionsワークフローが簡素化され、デプロイが一元管理できるようになりました。また、インフラストラクチャとアプリケーションデプロイの整合性も向上しています。
 
 ### 7. ローカル環境での実行
 
@@ -336,4 +344,59 @@ docker run -p 3000:3000 -e RAILS_ENV=development -e ALLOWED_HOSTS=localhost,127.
 ```bash
 # docker-compose.ymlファイルがある場所で
 docker-compose up
-``` 
+```
+
+### 8. バックエンドDockerイメージの変更手順
+
+バックエンドのDockerイメージを変更する場合は、以下の手順で行います：
+
+#### 開発環境でのイメージ変更
+1. Dockerイメージをビルドしてタグ付け
+   ```bash
+   cd backend
+   docker build -t your-ecr-repo:your-tag .
+   # または本番用ビルド
+   docker build -f Dockerfile.prod -t your-ecr-repo:your-tag .
+   ```
+
+2. ECRにプッシュ
+   ```bash
+   aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin <YOUR_AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-1.amazonaws.com
+   docker tag your-ecr-repo:your-tag <YOUR_AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-1.amazonaws.com/cicd-sample-backend-dev:your-tag
+   docker push <YOUR_AWS_ACCOUNT_ID>.dkr.ecr.ap-northeast-1.amazonaws.com/cicd-sample-backend-dev:your-tag
+   ```
+
+3. Terraformの変数ファイルを作成して適用
+   ```bash
+   cd infrastructure/environments/dev
+   cat > deploy.auto.tfvars << EOF
+   backend_version = "your-tag"
+   backend_allowed_hosts = "localhost,127.0.0.1,cicd-sample-alb-dev-*.ap-northeast-1.elb.amazonaws.com,*.cloudfront.net"
+   EOF
+   
+   terraform apply -auto-approve
+   ```
+
+#### CI/CDパイプラインでの自動デプロイ
+GitHub Actionsワークフローでは、以下の処理が自動的に行われます：
+1. `backend-dev.yml`または`backend-deploy-prod.yml`ワークフローにより、Dockerイメージがビルドされてタグ付けされる
+2. ECRにイメージがプッシュされる
+3. Terraform変数ファイルが作成され、`backend_version`変数にイメージタグが設定される
+4. Terraformが適用され、ECSタスク定義が更新される
+
+#### 特定バージョンへのロールバック
+以前のバージョンにロールバックする場合は、以下のように実行します：
+```bash
+cd infrastructure/environments/dev  # 開発環境の場合
+# または
+cd infrastructure/environments/prod  # 本番環境の場合
+
+cat > deploy.auto.tfvars << EOF
+backend_version = "previous-version-tag"
+backend_allowed_hosts = "appropriate-hosts-for-environment"
+EOF
+
+terraform apply -auto-approve
+```
+
+これにより、指定したバージョンタグのDockerイメージを使用するようにECSタスク定義が更新され、ECSサービスが更新されます。 
