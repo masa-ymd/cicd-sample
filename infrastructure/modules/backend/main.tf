@@ -22,6 +22,19 @@ variable "container_memory" {
   default = 512
 }
 
+# バックエンドデプロイ用の変数を追加
+variable "backend_version" {
+  type        = string
+  default     = null
+  description = "バックエンドのデプロイバージョン - ECRリポジトリのイメージタグを指定します。この値を変更することでデプロイされるDockerイメージのバージョンが変わります。"
+}
+
+variable "backend_allowed_hosts" {
+  type        = string
+  default     = "*"
+  description = "バックエンドの許可されたホスト - Railsアプリケーションがリクエストを受け付けるホスト名をカンマ区切りで指定します。"
+}
+
 # ECR Repository for Docker images
 resource "aws_ecr_repository" "backend" {
   name = "${var.project}-backend-${var.environment}"
@@ -258,10 +271,14 @@ resource "aws_ecs_task_definition" "main" {
   memory                   = var.container_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   
+  # コンテナ定義 - Dockerイメージのバージョンを変更するには backend_version 変数を設定します
+  # 例: terraform apply -var='backend_version=v1.2.3'
+  # または deploy.auto.tfvars ファイルに backend_version = "v1.2.3" を設定
   container_definitions = jsonencode([
     {
       name      = "${var.project}-container-${var.environment}"
-      image     = "${aws_ecr_repository.backend.repository_url}:latest" # Will be updated by GitHub Actions
+      # イメージバージョンの設定 - backend_version 変数で制御されます
+      image     = var.backend_version != null ? "${aws_ecr_repository.backend.repository_url}:${var.backend_version}" : "${aws_ecr_repository.backend.repository_url}:latest"
       essential = true
       
       portMappings = [
@@ -281,9 +298,14 @@ resource "aws_ecs_task_definition" "main" {
           name  = "CORS_ORIGINS"
           value = "*" # In a real application, this should be restricted
         },
+        # アプリケーションバージョン - backend_version 変数から自動設定されます
         {
           name  = "APP_VERSION"
-          value = var.environment == "prod" ? "v1.0.0" : "dev" # Will be updated by GitHub Actions
+          value = var.backend_version != null ? var.backend_version : var.environment == "prod" ? "v1.0.0" : "dev"
+        },
+        {
+          name  = "ALLOWED_HOSTS"
+          value = var.backend_allowed_hosts
         }
       ]
       
@@ -339,10 +361,9 @@ resource "aws_ecs_service" "main" {
     aws_lb_listener.http
   ]
   
-  # GitHub ActionsとTerraformの役割分担のため、以下の項目は変更を無視する
+  # Terraformによるデプロイを可能にするため、task_definitionの変更を監視するように修正
   lifecycle {
     ignore_changes = [
-      task_definition,  # タスク定義はGitHub Actionsで更新
       desired_count     # オートスケーリングや運用時の手動調整を許可
     ]
   }
@@ -415,4 +436,24 @@ resource "aws_cloudfront_distribution" "api" {
 # Output CloudFront API endpoint
 output "api_cloudfront_endpoint" {
   value = "https://${aws_cloudfront_distribution.api.domain_name}"
+}
+
+# フロントエンド同様、バックエンドのデプロイ完了後にCloudFront Invalidationを実行
+resource "null_resource" "invalidate_cloudfront_cache" {
+  count = var.backend_version != null ? 1 : 0
+
+  triggers = {
+    version = var.backend_version
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+      aws cloudfront create-invalidation --distribution-id ${aws_cloudfront_distribution.api.id} --paths "/*"
+      echo "✅ バックエンドAPI: CloudFrontキャッシュを無効化しました"
+    EOT
+  }
+
+  depends_on = [
+    aws_ecs_service.main
+  ]
 } 
