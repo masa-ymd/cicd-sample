@@ -399,4 +399,157 @@ EOF
 terraform apply -auto-approve
 ```
 
-これにより、指定したバージョンタグのDockerイメージを使用するようにECSタスク定義が更新され、ECSサービスが更新されます。 
+これにより、指定したバージョンタグのDockerイメージを使用するようにECSタスク定義が更新され、ECSサービスが更新されます。
+
+## 環境の完全削除・再構築手順
+
+環境を完全に削除して再構築する場合の手順です。ECRリポジトリやイメージも削除されるため、「鶏と卵」の問題を解決するための段階的な再構築手順を含みます。
+
+### 1. 環境の完全削除
+
+#### 1.1 リソースの事前準備
+```bash
+cd infrastructure/environments/dev  # または prod
+
+# S3バケットを空にする
+aws s3 rm s3://cicd-sample-frontend-dev --recursive
+aws s3 rm s3://cicd-sample-cf-logs-dev --recursive
+
+# ECRのイメージを削除
+aws ecr list-images --repository-name cicd-sample-backend-dev
+aws ecr batch-delete-image --repository-name cicd-sample-backend-dev --image-ids imageTag=latest
+# 他のタグのイメージも削除（必要に応じて）
+```
+
+#### 1.2 Terraformによる完全削除
+```bash
+# 削除対象の確認
+terraform plan -destroy
+
+# 完全削除の実行
+terraform destroy -auto-approve
+
+# 状態が空になったことを確認
+terraform state list
+```
+
+### 2. 段階的再構築手順
+
+#### 2.1 ECRリポジトリのみ作成
+```bash
+# backend_versionを空にしてインフラのみ構築
+terraform apply -var="backend_version=" -auto-approve
+```
+
+#### 2.2 ECRリポジトリの作成確認
+```bash
+# ECRリポジトリが作成されたか確認
+aws ecr describe-repositories --repository-names cicd-sample-backend-dev
+```
+
+#### 2.3 初期Dockerイメージの手動作成・プッシュ
+```bash
+cd ../../../backend
+
+# AWS ECRへのログイン
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.ap-northeast-1.amazonaws.com
+
+# ECRリポジトリURIを取得
+ECR_REPOSITORY_URI=$(aws ecr describe-repositories --repository-names cicd-sample-backend-dev --query 'repositories[0].repositoryUri' --output text)
+
+# Dockerイメージをビルド
+docker build -t cicd-sample-backend-dev:initial .
+
+# ECR用にタグ付け
+docker tag cicd-sample-backend-dev:initial $ECR_REPOSITORY_URI:initial
+docker tag cicd-sample-backend-dev:initial $ECR_REPOSITORY_URI:latest
+
+# ECRにプッシュ
+docker push $ECR_REPOSITORY_URI:initial
+docker push $ECR_REPOSITORY_URI:latest
+```
+
+#### 2.4 完全なインフラデプロイ
+```bash
+cd ../infrastructure/environments/dev
+
+# 初期イメージを指定してデプロイ
+terraform apply -var="backend_version=initial" -auto-approve
+```
+
+#### 2.5 フロントエンドの初期デプロイ
+```bash
+cd ../../../frontend
+
+# フロントエンドのビルドとデプロイ
+npm install
+npm run build
+aws s3 sync build/ s3://cicd-sample-frontend-dev/ --delete
+```
+
+### 3. 再構築後の確認
+
+```bash
+cd ../infrastructure/environments/dev
+
+# 作成されたリソースの確認
+terraform state list
+
+# 出力値の確認
+terraform output
+
+# アプリケーションの動作確認
+curl $(terraform output -raw backend_url)/health
+```
+
+### 4. CI/CDパイプラインの復旧
+
+#### 4.1 GitHub Secretsの更新
+再構築後の新しい値でGitHub Secretsを更新：
+- `API_URL`: Terraform出力の`backend_url`
+- `FRONTEND_URL`: Terraform出力の`frontend_url`
+- CloudFrontディストリビューションIDの取得・更新
+
+#### 4.2 自動ビルドのトリガー
+```bash
+# GitHub Actionsを手動トリガーまたはダミーコミット
+git checkout develop
+git commit --allow-empty -m "Trigger rebuild after infrastructure reconstruction"
+git push origin develop
+```
+
+### 5. 本番環境の再構築
+
+本番環境も同様の手順で再構築可能です：
+```bash
+cd infrastructure/environments/prod
+
+# 同様の手順で削除・再構築
+terraform destroy -auto-approve
+terraform apply -var="backend_version=" -auto-approve
+# ECRイメージ作成・プッシュ
+terraform apply -var="backend_version=initial" -auto-approve
+```
+
+### 注意事項
+
+- **データベース**: 削除により全てのデータが失われます
+- **ドメイン**: CloudFrontのドメイン名が変更される可能性があります
+- **GitHub Secrets**: 新しい値で更新が必要です
+- **DNS設定**: カスタムドメインを使用している場合は再設定が必要です
+
+### トラブルシューティング
+
+#### 依存関係エラーが発生した場合
+```bash
+# 強制的に依存関係を無視して削除
+terraform destroy -target=specific-resource
+terraform state rm problematic-resource
+```
+
+#### ロックファイルの不整合
+```bash
+# 再初期化
+terraform init -upgrade
+``` 
